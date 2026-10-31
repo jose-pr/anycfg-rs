@@ -1,0 +1,17 @@
+/.*
+!/.gitignore
+!/.gitattributes
+!/.github/
+.agents
+*.local.*
+CLAUDE*
+.claude
+/target/
+Cargo.lock
+build/
+dist/
+site/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -2,105 +2,137 @@
 
 [![Version](https://img.shields.io/badge/version-0.1.0--alpha.0-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/CHANGELOG.md)
 [![Rust version](https://img.shields.io/badge/rust-1.89%2B-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/Cargo.toml)
-[![Docs](https://img.shields.io/badge/docs-draft-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/AGENTS.md)
+[![Docs](https://img.shields.io/badge/docs-source-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/AGENTS.md)
 [![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/anycfg-rs/test.yaml)](https://github.com/jose-pr/anycfg-rs/actions/workflows/test.yaml)
 
-**Read and merge TOML, JSON and YAML configuration through Serde, from bytes,
-streams or files.** The `.cfg` format defaults to TOML and can name its parser
-with a first-line shebang. Sources are ordered, independently decoded, and
-combined before deserializing into an application type. See the
-[API header](https://github.com/jose-pr/anycfg-rs/blob/main/AGENTS.md).
-
-**Status:** unpublished source draft. The project has not yet been compiled
-against the Rust toolchain; the version and CI badges describe the prepared
-sources, not a published crate or verified CI run.
+**Configuration discovery, format dispatch, and ordered layering without choosing a parser or value model.**
+`anycfg` supplies standard user/system configuration paths, bounded byte and stream
+reading, `.cfg` format selection, and a loader. Applications register their own
+codecs, define value merge semantics, and decide how results become typed data.
+There are **no runtime dependencies** and no built-in document formats.
 
 ## Features
 
-- **Ordered sources** — load bytes, text, `std::io::Read` and local paths in one call, with later layers overriding earlier ones.
-- **Three strategies** — `Replace`, `Shallow` and `Deep` (the default), with arrays and scalar values replaced rather than appended.
-- **Format detection** — a `.cfg` document uses `#!json`, `#!yaml`, `#!toml` or a `%YAML` directive; without a marker it is TOML. `.json`, `.yaml`, `.yml` and `.toml` select their format by name.
-- **Serde** — decode one source directly into any `Deserialize` type, or merge several sources and deserialize once into a `DeserializeOwned` type.
-- **Bounded reads** — 8 MiB per source and 64 MiB across a loader by default, including remaining-budget limits for streams and a 64-level nesting limit for every merged source; no implicit file discovery, commands, templates or includes.
-- **Serialization** — generate plain format text, or `.cfg` text tagged for JSON and YAML.
+- **Pluggable formats** — a `Codec<V>` implementation or `Callbacks::new(decode, encode)` registers a format name, filename extensions, and optional native markers.
+- **Application-owned values** — decoders return the application's `V`, with no intermediate JSON-like representation or built-in conversion rules.
+- **User-defined merging** — implement `MergeValues<V>` or pass a merge callback. `Merge::Deep`, `Shallow` and `Replace` are policy names passed to that adapter, not hard-coded map algorithms.
+- **Typed conversion** — `Loader::load_as` converts a merged `V` to any `T` with a caller callback; optional third-party serialization frameworks belong in the consumer.
+- **Standard locations** — `user_config_path`, `system_config_path`, and `default_configs` provide platform defaults and system-before-user layering.
+- **Deterministic detection** — an explicit format wins, then a registered extension, then `.cfg`/anonymous shebang or a registered marker, then a caller-selected fallback. No parser guessing or command execution.
+- **Resource limits** — bounded per-source and combined byte input; the value adapter validates its own nesting rules.
 
 ## Installation
 
-Until the package is released, add it from the checkout:
+This repository is not yet published to a registry:
 
 ```toml
 [dependencies]
-anycfg = { path = "../anycfg-rs" }
-serde = { version = "1", features = ["derive"] }
+anycfg = { git = "https://github.com/jose-pr/anycfg-rs" }
 ```
 
-There are no optional Cargo features in this version. All three formats are available with the default build.
+| Cargo feature | Adds | Default |
+| --- | --- | --- |
+| None | The core is format-neutral and has no dependencies | Yes |
 
 ## Quick start
 
-One source, with no filesystem dependency:
+Register a text codec and load two layers. The same mechanism works with an
+application-defined structured value, parser, and merge adapter.
 
 ```rust
-use anycfg::from_slice;
-use serde::Deserialize;
+use anycfg::{Callbacks, CodecError, Formats, Loader, Merge, ReplaceValues, Source};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config { port: u16 }
+let mut formats = Formats::<String>::new();
+formats.register("plain", ["txt"], Callbacks::new(
+    |input: &[u8]| String::from_utf8(input.to_vec()).map_err(|_| CodecError::default()),
+    |value: &String| Ok(value.as_bytes().to_vec()),
+))?;
+formats.set_default("plain")?;
 
-let config: Config = from_slice(b"port = 8080")?;
-assert_eq!(config.port, 8080);
-# Ok::<(), Box<dyn std::error::Error>>(())
+let text = Loader::new(&formats)
+    .merge(Merge::Replace)
+    .load([Source::text("old"), Source::text("new")], &ReplaceValues)?;
+assert_eq!(text, "new");
+
+# Ok::<(), anycfg::Error>(())
 ```
 
-Merge TOML, JSON and YAML, then deserialize once:
+For a structured format, register its decoder and encoder in exactly the same
+way. The decoder chooses `V`; the merge adapter chooses how its mappings,
+sequences, scalar values and opaque types behave. Convert the result through
+`load_as(sources, adapter, |value| /* Result<T, E> */)`.
+
+Read system and user configuration paths (missing files become `None`):
 
 ```rust
-use anycfg::{Loader, Source};
-use serde::Deserialize;
-use std::io::Cursor;
+use anycfg::{default_configs, Source};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config { host: String, port: u16, debug: bool }
-
-let base = b"host = 'localhost'\nport = 8080\ndebug = false\n";
-let runtime = Cursor::new(b"#!json\n{\"port\": 9090}".as_slice());
-let overrides = "debug: true\n";
-
-let config: Config = Loader::new().load([
-    Source::bytes(base).name("base.cfg"),
-    Source::reader(runtime).name("runtime.cfg"),
-    Source::text(overrides).name("override.yaml"),
-])?;
-assert_eq!((config.host.as_str(), config.port, config.debug), ("localhost", 9090, true));
-# Ok::<(), Box<dyn std::error::Error>>(())
+let paths = default_configs("myapp/config.cfg")?;
+let sources: Vec<_> = paths.iter()
+    .map(|path| path.as_deref().map(Source::path))
+    .collect();
+// Pass `sources` to Loader::load or Loader::load_or.
+assert!(sources.len() == 2);
+# Ok::<(), anycfg::Error>(())
 ```
-
-For nested tables, `Deep` merges only mappings recursively. A later array,
-scalar, or `null` replaces the earlier value. Missing keys inherit earlier
-values. `Shallow` replaces entire top-level sections. `Replace` discards each
-preceding document. No strategy interprets `null` as a delete sentinel.
 
 ## API overview
 
 | Module | Purpose |
 | --- | --- |
-| `anycfg` | `Format`, `Options`, `Detection`, `detect`, direct Serde loads, serialization and safe errors |
-| `anycfg::Loader` | Ordered multi-source merging into `DeserializeOwned` types |
-| `anycfg::Source` | In-memory bytes/text, synchronous readers and filesystem paths with per-source format hints |
-| `anycfg::Merge` | Replace, shallow merge and deep merge |
+| `anycfg::Formats<V>` | Runtime registry of format codecs and marker/extension selection |
+| `anycfg::Codec<V>` | Consumer-owned parse and serialize operations |
+| `anycfg::Callbacks<V, D, E>` | Adapter from parse/encode closures to `Codec<V>` |
+| `anycfg::Loader<V>` | Load ordered sources, apply budget limits, invoke merge and conversion |
+| `anycfg::MergeValues<V>` | Consumer-owned merge and nesting validation |
+| `anycfg::Source` | Input as bytes, text, reader or path plus format hints |
+| Standard path functions | Discover system and per-user configuration paths |
 
-`Loader` currently merges through `serde_json::Value`. That supports ordinary
-string-keyed configuration tables, lists and scalars, but it is **not** a
-lossless intermediate for every TOML datetime, YAML-specific value or
-special-number representation. Keep Guatiao's `guatiao-serde` for those specialized
-values. More general value preservation and `DeserializeSeed` are separate API
-work, not hidden guarantees in this loader.
+### Path conventions
+
+| Platform | System base | User base |
+| --- | --- | --- |
+| Windows | `%PROGRAMDATA%` or `C:\\ProgramData` | `%APPDATA%` or `~/AppData/Roaming` |
+| Linux / Unix | `/etc` | absolute `$XDG_CONFIG_HOME` or `~/.config` |
+| macOS | `/etc` | absolute `$XDG_CONFIG_HOME` or `~/.config` |
+
+`default_configs("app.cfg")` yields `[system, user]`, retaining `None` for
+missing or non-file paths. It accepts nested relative filenames and rejects
+absolute paths and `..` traversal. It does not create directories. A loader
+can receive the resulting optional sources directly; `load_or` returns the
+consumer-provided value when all sources are absent.
+
+### Format selection
+
+Only registered codecs are understood. `.cfg` is a generic carrier: if it
+starts with `#!<registered-name>` (including a path-like shebang) the selected
+header is removed. Without a header, it uses the registry default. Other
+registered filename extensions select their codec directly, without sniffing.
+A native format marker can be registered explicitly with `register_marker`;
+that marker is **not** stripped, because only the owning codec knows its syntax.
+A forced format does not strip shebang lines.
+
+### Value contract
+
+No assumptions are made about the value's representation. For applications
+which need deep merging, the `MergeValues<V>` implementation should walk its
+own structural model and enforce `max_depth`. The default `validate` method
+is intentionally a no-op; a caller that handles recursive untrusted values
+must implement it. Callback mergers can choose alternative semantics. A parser
+is responsible for its own input recursion and expansion limits.
+
+### Security
+
+Sources are never interpreted as code, commands, URLs, includes, or environment
+substitutions by this crate. A registered codec is explicitly trusted to parse
+and serialize its format. The core never includes input excerpts or caller
+conversion errors in its diagnostic messages; codecs supply only optional
+line and column numbers. A reader may consume one byte past the permitted
+limit to recognize overflow.
 
 ## Development
 
-Rust 1.89 or newer:
+Rust 1.89 or later:
 
 ```bash
 cargo fmt --all --check
@@ -110,13 +142,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 cargo package --list --allow-dirty
 ```
 
-The package inventory must contain `AGENTS.md` and `README.md`, and no `.agents/`
-or `*.local.*` files. The release is gated until a license is selected and the
-build and tests have passed on supported platforms.
+The packaged `AGENTS.md` describes the exported API. CI is available from
+workflow dispatch or a temporary `ci-*` tag; no release tag is created by
+normal development.
 
 ### Releasing
 
-Follow [Semantic Versioning](https://semver.org/) and the
-[Changelog](https://github.com/jose-pr/anycfg-rs/blob/main/CHANGELOG.md).
-A release requires an explicit decision to publish, a passing CI run and a
-matching version tag. No release or publication has been made.
+Releases require an explicit license decision and passing Rust checks. The
+manifest currently specifies `publish = false`. No release tag or registry
+publication is configured.

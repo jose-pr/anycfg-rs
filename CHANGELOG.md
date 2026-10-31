@@ -7,21 +7,23 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the fixed format enum and hard-coded parser dependencies with a
+  registered `Codec<V>` interface, callback adapters and configurable format
+  names, suffixes, native markers and fallback selection.
+- Decode directly into the consumer's value model, with no intermediate
+  format-specific or JSON-compatible representation.
+- Delegate `Replace`, `Shallow`, `Deep` merging and structural depth
+  validation to a `MergeValues<V>` implementation or merge callback.
+- Convert the final merged value to an application type through `load_as`.
+
 ### Added
 
-- Read TOML, JSON and YAML from byte slices, strings, readers and files, using a
-  deterministic `.cfg` shebang convention with TOML fallback.
-- Deserialize ordered configuration sources through `Loader` with deep,
-  shallow and replace merge strategies. Later sources override earlier ones.
-- Enforce per-source, combined-source and merge-depth limits.
-- Serialize native documents and self-describing `.cfg` documents.
-
-### Fixed
-
-- Reject documents deeper than 64 nested mapping/array levels even when a
-  source is used alone or with shallow/replacement merging.
-- Stop streaming reads at the remaining combined-byte budget plus one
-  overflow-detection byte, instead of reading the full source allowance first.
-- Enforce the byte limit on standalone format detection.
+- `user_config_path`, `system_config_path` and `default_configs` using standard
+  platform directories. `default_configs` yields system then user paths, with
+  missing files represented by `None`.
+- Bounded parsing and reading from byte slices, strings, streams and paths.
+- Optional source layers and `load_or` for an explicit missing-file fallback.
 
 [Unreleased]: https://github.com/jose-pr/anycfg-rs/commits/main/

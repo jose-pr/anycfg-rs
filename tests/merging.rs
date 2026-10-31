@@ -1,159 +1,178 @@
-use anycfg::{Error, Format, Loader, Merge, Source};
-use serde::Deserialize;
-use std::io::Cursor;
+use std::collections::BTreeMap;
+use std::io::Read;
 
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct Settings {
-    server: Server,
-    flags: Vec<String>,
-    extra: Option<String>,
+use anycfg::{Callbacks, CodecError, Error, Formats, Loader, Merge, MergeValues, ReplaceValues, Source};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Node {
+    Text(String),
+    Map(BTreeMap<String, Node>),
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct Server {
-    host: String,
-    port: u16,
-}
-
-#[test]
-fn later_sources_deep_merge_mixed_formats_and_replace_arrays() -> Result<(), Error> {
-    let config: Settings = Loader::new().load([
-        Source::text("flags = []\n[server]\nhost = '127.0.0.1'\nport = 8080\n")
-            .name("base.cfg"),
-        Source::reader(Cursor::new(b"#!json\n{\"server\":{\"port\":9090},\"flags\":[\"a\",\"b\"]}"))
-            .name("env.cfg"),
-        Source::text("server:\n  host: localhost\nextra: custom\n")
-            .name("local.yaml"),
-    ])?;
-    assert_eq!(config.server.host, "localhost");
-    assert_eq!(config.server.port, 9090);
-    assert_eq!(config.flags, ["a", "b"]);
-    assert_eq!(config.extra.as_deref(), Some("custom"));
-    Ok(())
-}
-
-#[test]
-fn shallow_merge_replaces_whole_sections() -> Result<(), Error> {
-    #[derive(Deserialize)]
-    struct Config { server: serde_json::Value }
-    let config: Config = Loader::new().merge(Merge::Shallow).load([
-        Source::text("[server]\nhost = 'one'\nport = 80"),
-        Source::text("{\"server\":{\"port\":443}}").format(Format::Json),
-    ])?;
-    assert_eq!(config.server, serde_json::json!({"port":443}));
-    Ok(())
-}
-
-#[test]
-fn replace_merge_uses_the_last_complete_document() -> Result<(), Error> {
-    let value: serde_json::Value = Loader::new().merge(Merge::Replace).load([
-        Source::text("a = 1"),
-        Source::text("{\"b\":2}").format(Format::Json),
-    ])?;
-    assert_eq!(value, serde_json::json!({"b":2}));
-    Ok(())
-}
-
-#[test]
-fn total_byte_limit_applies_across_documents() {
-    let error = Loader::new().max_total_bytes(16).load::<serde_json::Value, _>([
-        Source::text("a = 12345"),
-        Source::text("b = 67890"),
-    ]).unwrap_err();
-    assert!(matches!(error, Error::Source { index: 1, .. }));
-    assert!(error.to_string().contains("16 bytes"));
-}
-
-#[test]
-fn an_empty_loader_reports_no_sources() {
-    let sources: Vec<Source<'_>> = vec![];
-    let error = Loader::new().load::<serde_json::Value, _>(sources).unwrap_err();
-    assert!(matches!(error, Error::NoSources));
-}
-
-#[test]
-fn a_malformed_layer_reports_index_without_quoting_secrets() {
-    let error = Loader::new().load::<serde_json::Value, _>([
-        Source::text("good = true"),
-        Source::text("password = \"secret123\"\nbad = ["),
-    ]).unwrap_err();
-    assert!(matches!(error, Error::Source { index: 1, .. }));
-    assert!(!format!("{error:?} {error}").contains("secret123"));
-}
-
-#[test]
-fn two_non_object_roots_cannot_be_shallow_merged() {
-    let error = Loader::new().merge(Merge::Shallow).load::<serde_json::Value, _>([
-        Source::text("[1,2]").format(Format::Json),
-        Source::text("[3,4]").format(Format::Json),
-    ]).unwrap_err();
-    assert!(matches!(error, Error::Source { index: 1, .. }));
-    assert!(error.to_string().contains("object-valued"));
-}
-
-fn nested_json(levels: usize) -> String {
-    let mut input = String::new();
-    for _ in 0..levels {
-        input.push_str("{\"a\":");
-    }
-    input.push('0');
-    for _ in 0..levels {
-        input.push('}');
-    }
-    input
-}
-
-#[test]
-fn every_layer_is_depth_checked_even_when_it_is_not_recursively_merged() {
-    let within_limit = nested_json(64);
-    let too_deep = nested_json(65);
-
-    for policy in [Merge::Deep, Merge::Shallow, Merge::Replace] {
-        let okay: serde_json::Value = Loader::new().merge(policy).load([
-            Source::text(&within_limit).format(Format::Json),
-        ]).unwrap();
-        assert!(okay.is_object());
-
-        let error = Loader::new().merge(policy).load::<serde_json::Value, _>([
-            Source::text(&too_deep).format(Format::Json),
-        ]).unwrap_err();
-        assert!(matches!(error, Error::Source { index: 0, cause }
-            if matches!(*cause, Error::TooDeep { limit: 64 })));
+fn insert(node: &mut Node, path: &str, text: String) {
+    let Node::Map(map) = node else { panic!("test parser constructs map roots") };
+    if let Some((head, tail)) = path.split_once('.') {
+        insert(map.entry(head.to_owned()).or_insert_with(|| Node::Map(BTreeMap::new())), tail, text);
+    } else {
+        map.insert(path.to_owned(), Node::Text(text));
     }
 }
 
-#[test]
-fn stream_reads_stop_at_the_remaining_total_byte_budget() {
-    use std::cell::Cell;
-    use std::io::Read;
-    use std::rc::Rc;
+fn registry() -> Formats<Node> {
+    let mut registry = Formats::new();
+    registry.register("pairs", ["pair"], Callbacks::new(
+        |data: &[u8]| {
+            let text = core::str::from_utf8(data).map_err(|_| CodecError::default())?;
+            let mut root = Node::Map(BTreeMap::new());
+            for (index, line) in text.lines().enumerate() {
+                if line.is_empty() { continue; }
+                let (key, value) = line.split_once('=')
+                    .ok_or(CodecError { line: Some(index + 1), column: None })?;
+                insert(&mut root, key, value.to_owned());
+            }
+            Ok(root)
+        },
+        |_value: &Node| Ok(Vec::new()),
+    )).unwrap();
+    registry.set_default("pairs").unwrap();
+    registry
+}
 
-    struct CountingReader {
-        bytes: Cursor<Vec<u8>>,
-        count: Rc<Cell<usize>>,
+struct TreeAdapter;
+
+impl MergeValues<Node> for TreeAdapter {
+    fn validate(&self, node: &Node, limit: usize) -> Result<(), Error> {
+        let mut pending = vec![(node, 0)];
+        while let Some((value, depth)) = pending.pop() {
+            if depth > limit { return Err(Error::TooDeep { limit }); }
+            if let Node::Map(map) = value {
+                pending.extend(map.values().map(|child| (child, depth + 1)));
+            }
+        }
+        Ok(())
     }
-    impl Read for CountingReader {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            let n = self.bytes.read(buffer)?;
-            self.count.set(self.count.get() + n);
-            Ok(n)
+
+    fn merge(&self, old: &mut Node, next: Node, strategy: Merge, max_depth: usize) -> Result<(), Error> {
+        if strategy == Merge::Replace { *old = next; return Ok(()); }
+        match (old, next) {
+            (Node::Map(before), Node::Map(after)) => {
+                for (key, value) in after {
+                    if strategy == Merge::Deep {
+                        if let Some(previous) = before.get_mut(&key) {
+                            if matches!(previous, Node::Map(_)) && matches!(value, Node::Map(_)) {
+                                self.merge(previous, value, strategy, max_depth.saturating_sub(1))?;
+                            } else { *previous = value; }
+                            continue;
+                        }
+                    }
+                    before.insert(key, value);
+                }
+                Ok(())
+            }
+            _ => Err(Error::MergeShape),
         }
     }
+}
 
-    let first = b"a = 1\n";
-    let read_count = Rc::new(Cell::new(0));
-    let large_stream = CountingReader {
-        bytes: Cursor::new(vec![b'x'; 4096]),
-        count: Rc::clone(&read_count),
-    };
-    let result = Loader::new().max_source_bytes(4096).max_total_bytes(12)
-        .load::<serde_json::Value, _>([
-            Source::bytes(first),
-            Source::reader(large_stream),
-        ]);
-    assert!(matches!(result, Err(Error::Source { index: 1, cause })
-        if matches!(*cause, Error::TooLarge { limit: 12 })));
-    assert!(read_count.get() <= 12 - first.len() + 1);
+#[test]
+fn mixed_layers_merge_deep_without_a_library_value_type() {
+    let registry = registry();
+    let merged = Loader::new(&registry).load([
+        Source::text("server.host=base\nserver.port=80\nname=base\n"),
+        Source::text("server.port=81\nname=override\n"),
+    ], &TreeAdapter).unwrap();
+    let Node::Map(root) = merged else { panic!() };
+    let Node::Map(server) = &root["server"] else { panic!() };
+    assert_eq!(server["host"], Node::Text("base".to_owned()));
+    assert_eq!(server["port"], Node::Text("81".to_owned()));
+    assert_eq!(root["name"], Node::Text("override".to_owned()));
+}
+
+#[test]
+fn shallow_and_replace_are_adapter_controlled() {
+    let registry = registry();
+    let shallow = Loader::new(&registry).merge(Merge::Shallow)
+        .load([Source::text("a.x=1\n"), Source::text("a.y=2\n")], &TreeAdapter).unwrap();
+    let Node::Map(map) = shallow else { panic!() };
+    let Node::Map(a) = &map["a"] else { panic!() };
+    assert!(!a.contains_key("x"));
+    assert!(a.contains_key("y"));
+    let value = Loader::new(&registry).merge(Merge::Replace)
+        .load([Source::text("a.x=1\n"), Source::text("b=2\n")], &ReplaceValues).unwrap();
+    let Node::Map(map) = value else { panic!() };
+    assert!(!map.contains_key("a"));
+}
+
+#[test]
+fn caller_can_convert_the_final_value_without_library_serde_dependency() {
+    let registry = registry();
+    let port: u16 = Loader::new(&registry)
+        .load_as([Source::text("port=8080\n")], &TreeAdapter, |root| {
+            let Node::Map(map) = root else { return Err(()) };
+            let Some(Node::Text(port)) = map.get("port") else { return Err(()) };
+            port.parse().map_err(|_| ())
+        }).unwrap();
+    assert_eq!(port, 8080);
+}
+
+#[test]
+fn absent_sources_can_be_passed_as_options() {
+    let registry = registry();
+    let got = Loader::new(&registry).load([
+        None,
+        Some(Source::text("app=one\n")),
+        None,
+        Some(Source::text("app=two\n")),
+    ], &TreeAdapter).unwrap();
+    let Node::Map(map) = got else { panic!() };
+    assert_eq!(map["app"], Node::Text("two".to_owned()));
+    let fallback = Loader::new(&registry).load_or([None::<Source<'_>>], &TreeAdapter, Node::Text("fallback".to_owned())).unwrap();
+    assert_eq!(fallback, Node::Text("fallback".to_owned()));
+}
+
+#[test]
+fn the_adapters_depth_check_runs_even_for_one_layer() {
+    let registry = registry();
+    let error = Loader::new(&registry).max_depth(1)
+        .load([Source::text("nested.child=1\n")], &TreeAdapter).unwrap_err();
+    assert!(matches!(error, Error::Source { index: 0, .. }));
+}
+
+#[derive(Clone)]
+struct CountingRead(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Read for CountingRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = buf.len().min(1);
+        if n > 0 { buf[0] = b'x'; }
+        Ok(n)
+    }
+}
+
+#[test]
+fn source_and_total_byte_limits_stop_streams() {
+    let registry = registry();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let error = Loader::new(&registry).max_total_bytes(5).max_source_bytes(10)
+        .load([Source::reader(CountingRead(calls.clone()))], &TreeAdapter).unwrap_err();
+    assert!(matches!(error, Error::Source { cause, .. } if matches!(*cause, Error::TooLarge { limit: 5 })));
+    assert!(calls.load(std::sync::atomic::Ordering::Relaxed) <= 6);
+}
+
+#[test]
+fn a_callback_can_define_merging_for_nonmap_types() {
+    let mut registry = Formats::new();
+    registry.register("text", ["txt"], Callbacks::new(
+        |bytes: &[u8]| -> Result<String, CodecError> {
+            String::from_utf8(bytes.to_vec()).map_err(|_| CodecError::default())
+        },
+        |value: &String| Ok(value.as_bytes().to_vec()),
+    )).unwrap();
+    registry.set_default("text").unwrap();
+    let merged = Loader::new(&registry).load([
+        Source::text("a"), Source::text("b"),
+    ], &|old: &mut String, next: String, _strategy, _depth| {
+        old.push_str(&next); Ok(())
+    }).unwrap();
+    assert_eq!(merged, "ab");
 }

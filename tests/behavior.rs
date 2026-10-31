@@ -1,96 +1,107 @@
-use std::io::{Cursor, Read};
-use anycfg::{detect, from_reader, from_reader_with, from_slice, from_slice_with, to_cfg_vec, to_vec, Error, Format, Options};
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config { name: String, count: u32 }
+use anycfg::{Callbacks, CodecError, Error, Formats, Options};
 
-fn expected() -> Config { Config { name: "ai6".into(), count: 3 } }
-
-#[test]
-fn cfg_defaults_to_toml_even_without_a_filename() {
-    let bytes = b"name = 'ai6'\ncount = 3\n";
-    assert_eq!(from_slice::<Config>(bytes).unwrap(), expected());
-    assert_eq!(from_slice_with::<Config>(bytes, Options::new().name("ai6.cfg")).unwrap(), expected());
-}
-
-#[test]
-fn shebangs_and_yaml_directive() {
-    let samples: &[&[u8]] = &[
-        b"#!json\n{\"name\":\"ai6\",\"count\":3}\n",
-        b"#!/usr/bin/env yaml\nname: ai6\ncount: 3\n",
-        b"#!YML\r\nname: ai6\ncount: 3\n",
-        b"%YAML 1.2\n---\nname: ai6\ncount: 3\n",
-        b"\xef\xbb\xbf#!toml\nname='ai6'\ncount=3\n",
-    ];
-    for &sample in samples { assert_eq!(from_slice::<Config>(sample).unwrap(), expected()); }
-}
-
-#[test]
-fn filename_selects_format_not_parse_success() {
-    let bytes = b"{\"name\":\"ai6\",\"count\":3}";
-    assert!(from_slice_with::<Config>(bytes, Options::new().name("ai6.cfg")).is_err());
-    assert_eq!(from_slice_with::<Config>(bytes, Options::new().name("ai6.json")).unwrap(), expected());
-    assert!(matches!(from_slice_with::<Config>(bytes, Options::new().name("ai6.conf")), Err(Error::UnsupportedExtension(_))));
-}
-
-#[test]
-fn caller_format_overrides_filename() {
-    let bytes = b"name: ai6\ncount: 3\n";
-    assert_eq!(from_slice_with::<Config>(bytes, Options::new().name("app.json").format(Format::Yaml)).unwrap(), expected());
-}
-
-#[test]
-fn rejects_unknown_shebang_without_fallback() {
-    assert!(matches!(from_slice::<Config>(b"#!ini\n[app]\nname = 'ai6'"), Err(Error::UnsupportedFormat(_))));
-    assert!(matches!(from_slice::<Config>(b"#!\nname = 'ai6'"), Err(Error::InvalidShebang)));
-}
-
-#[test]
-fn reader_supports_nonfilesystem_byte_streams_and_limits() {
-    let bytes = b"#!json\n{\"name\":\"ai6\",\"count\":3}";
-    assert_eq!(from_reader::<Config>(Cursor::new(bytes)).unwrap(), expected());
-    assert!(matches!(from_reader_with::<Config>(Cursor::new(bytes), Options::new().max_bytes(5)), Err(Error::TooLarge { limit: 5 })));
-    // Simulate a reader whose chunks are smaller than the shebang.
-    struct Chunked<R>(R);
-    impl<R: Read> Read for Chunked<R> {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            let size = buf.len().min(2);
-            self.0.read(&mut buf[..size])
-        }
+fn formats() -> Formats<BTreeMap<String, String>> {
+    let mut formats = Formats::new();
+    for (name, extension, separator) in [("equals", "eq", b'='), ("colon", "co", b':')] {
+        formats.register(name, [extension], Callbacks::new(
+            move |data: &[u8]| {
+                let input = core::str::from_utf8(data).map_err(|_| CodecError::default())?;
+                let mut map = BTreeMap::new();
+                for (index, line) in input.lines().enumerate() {
+                    if line.is_empty() { continue; }
+                    let (key, value) = line.split_once(char::from(separator))
+                        .ok_or(CodecError { line: Some(index + 1), column: None })?;
+                    map.insert(key.to_owned(), value.to_owned());
+                }
+                Ok(map)
+            },
+            move |map: &BTreeMap<String, String>| {
+                let mut output = String::new();
+                for (key, value) in map {
+                    output.push_str(key);
+                    output.push(char::from(separator));
+                    output.push_str(value);
+                    output.push('\n');
+                }
+                Ok(output.into_bytes())
+            },
+        )).unwrap();
     }
-    assert_eq!(from_reader::<Config>(Chunked(Cursor::new(bytes))).unwrap(), expected());
+    formats.set_default("equals").unwrap();
+    formats.register_marker("colon", b"%COLON\n").unwrap();
+    formats
 }
 
 #[test]
-fn no_file_needed_for_borrowed_deserialization() {
-    #[derive(Debug, Deserialize)]
-    struct Borrowed<'a> { name: &'a str }
-    let bytes = b"name = 'ai6'\n";
-    assert_eq!(from_slice::<Borrowed<'_>>(bytes).unwrap().name, "ai6");
+fn anonymous_sources_use_the_registered_fallback_without_sniffing() {
+    let registry = formats();
+    let value = registry.from_slice(b"port=80\n", Options::new()).unwrap();
+    assert_eq!(value["port"], "80");
+    let err = registry.from_slice(b"port:80\n", Options::new()).unwrap_err();
+    assert!(matches!(err, Error::Parse { .. }));
 }
 
 #[test]
-fn writing_cfg_roundtrips_every_format() {
-    for format in [Format::Toml, Format::Json, Format::Yaml] {
-        let bytes = to_cfg_vec(&expected(), format).unwrap();
-        assert_eq!(detect(&bytes, Options::new().name("app.cfg")).unwrap().format, format);
-        assert_eq!(from_slice_with::<Config>(&bytes, Options::new().name("app.cfg")).unwrap(), expected());
-        let raw = to_vec(&expected(), format).unwrap();
-        assert!(!raw.starts_with(b"#!"));
-    }
+fn extensions_and_shebangs_choose_only_registered_codecs() {
+    let registry = formats();
+    let custom = registry.from_slice(b"port:80\n", Options::new().name("app.co")).unwrap();
+    assert_eq!(custom["port"], "80");
+    let cfg = registry.from_slice(b"#!/usr/bin/env colon\nport:80\n", Options::new().name("app.cfg")).unwrap();
+    assert_eq!(cfg["port"], "80");
+    let marked = registry.from_slice(b"%COLON\nport:80\n", Options::new()).unwrap_err();
+    // The marker selects the codec but stays in the payload for the codec to handle.
+    assert!(matches!(marked, Error::Parse { .. }));
+    assert!(matches!(registry.from_slice(b"port=80\n", Options::new().name("app.zz")), Err(Error::UnsupportedExtension)));
+    assert!(matches!(registry.from_slice(b"#!not-registered\nport:80", Options::new()), Err(Error::UnsupportedFormat)));
 }
 
 #[test]
-fn parse_errors_do_not_echo_secret_value() {
-    let err = from_slice::<Config>(b"name = 'MY_SECRET'\ncount = 'wrong'\n").unwrap_err();
-    assert!(!format!("{err:?}").contains("MY_SECRET"));
-    assert!(!format!("{err}").contains("MY_SECRET"));
+fn explicit_format_does_not_remove_a_shebang() {
+    let registry = formats();
+    assert!(matches!(registry.from_slice(b"#!colon\nport:80\n", Options::new().format("colon")), Err(Error::Parse { .. })));
 }
 
 #[test]
-fn detecting_without_deserializing_obeys_the_input_budget() {
-    let error = detect(b"#!json\n{}", Options::new().max_bytes(4)).unwrap_err();
-    assert!(matches!(error, Error::TooLarge { limit: 4 }));
+fn cfg_serialization_round_trips_with_runtime_format_selection() {
+    let registry = formats();
+    let map = BTreeMap::from([("port".to_owned(), "80".to_owned())]);
+    let doc = registry.to_cfg_vec(&map, "colon").unwrap();
+    assert!(doc.starts_with(b"#!colon\n"));
+    let read = registry.from_slice(&doc, Options::new().name("config.cfg")).unwrap();
+    assert_eq!(map, read);
+    let default = registry.to_cfg_vec(&map, "equals").unwrap();
+    assert!(!default.starts_with(b"#!"));
+}
+
+#[test]
+fn registration_is_atomic_and_names_are_validated() {
+    let registry = formats();
+    assert_eq!(registry.to_string(&BTreeMap::new(), "equals").unwrap(), "");
+    let mut registry = Formats::<Vec<u8>>::new();
+    let noop = || Callbacks::new(|x: &[u8]| Ok(x.to_vec()), |x: &Vec<u8>| Ok(x.clone()));
+    registry.register("alpha", ["aa"], noop()).unwrap();
+    assert!(matches!(registry.register("beta", ["aa", "bb"], noop()), Err(Error::InvalidRegistration)));
+    registry.register("beta", ["bb"], noop()).unwrap();
+    assert!(matches!(registry.register("not valid", ["zz"], noop()), Err(Error::InvalidRegistration)));
+    assert!(matches!(registry.set_default("unknown"), Err(Error::UnsupportedFormat)));
+}
+
+#[test]
+fn byte_budgets_are_enforced_even_during_detection_and_stream_decoding() {
+    let registry = formats();
+    assert!(matches!(registry.detect(b"abcdef", Options::new().max_bytes(3)), Err(Error::TooLarge { limit: 3 })));
+    assert!(matches!(registry.from_reader(&b"abcdef"[..], Options::new().max_bytes(3)), Err(Error::TooLarge { limit: 3 })));
+}
+
+#[test]
+fn parse_errors_cannot_display_secrets_returned_by_user_codecs() {
+    let mut registry = Formats::new();
+    registry.register("conf", ["conf"], Callbacks::new(
+        |_input: &[u8]| -> Result<String, CodecError> { Err(CodecError { line: Some(2), column: Some(5) }) },
+        |_value: &String| Ok(Vec::new()),
+    )).unwrap();
+    let err = registry.from_slice(b"password=swordfish", Options::new().format("conf")).unwrap_err();
+    assert!(!format!("{err:?} {err}").contains("swordfish"));
 }

@@ -1,16 +1,16 @@
-use anycfg::{from_slice, from_reader_with, to_cfg_string, Format, Options};
-use serde::{Serialize, Deserialize};
-use std::io::Cursor;
+use anycfg::{Callbacks, CodecError, Formats, Loader, Merge, ReplaceValues, Source};
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct App { listen: String }
+fn main() -> Result<(), anycfg::Error> {
+    let mut formats = Formats::new();
+    formats.register("plain", ["txt"], Callbacks::new(
+        |input: &[u8]| String::from_utf8(input.to_vec()).map_err(|_| CodecError::default()),
+        |value: &String| Ok(value.as_bytes().to_vec()),
+    ))?;
+    formats.set_default("plain")?;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = b"#!json\n{\"listen\":\"127.0.0.1:7081\"}";
-    let app: App = from_slice(bytes)?;
-    let from_network: App = from_reader_with(Cursor::new(bytes), Options::new().name("ai6.cfg"))?;
-    assert_eq!(app.listen, from_network.listen);
-    println!("{}", to_cfg_string(&app, Format::Yaml)?);
+    let result = Loader::new(&formats)
+        .merge(Merge::Replace)
+        .load([Source::text("base"), Source::text("user")], &ReplaceValues)?;
+    println!("{result}");
     Ok(())
 }

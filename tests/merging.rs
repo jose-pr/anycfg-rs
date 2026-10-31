@@ -176,3 +176,33 @@ fn a_callback_can_define_merging_for_nonmap_types() {
     }).unwrap();
     assert_eq!(merged, "ab");
 }
+
+#[test]
+fn loader_default_format_applies_to_cfg_and_unnamed_byte_streams() {
+    let mut formats = Formats::new();
+    formats.register("text", ["txt"], Callbacks::new(
+        |input: &[u8]| String::from_utf8(input.to_vec()).map_err(|_| CodecError::default()),
+        |value: &String| Ok(value.as_bytes().to_vec()),
+    )).unwrap();
+    formats.register("bytes", ["bin"], Callbacks::new(
+        |input: &[u8]| Ok::<_, CodecError>(format!("bytes:{}", input.len())),
+        |value: &String| Ok(value.as_bytes().to_vec()),
+    )).unwrap();
+    // No registry fallback: the loader chooses the format for unnamed data.
+    let loader = Loader::new(&formats).default_format("text").merge(Merge::Replace);
+    let got = loader.load([
+        Source::bytes(b"one"),
+        Source::reader(&b"two"[..]),
+        Source::bytes(b"three").name("config.cfg"),
+    ], &ReplaceValues).unwrap();
+    assert_eq!(got, "three");
+
+    let forced = loader.load([
+        Source::reader(&b"four"[..]).format("bytes")
+    ], &ReplaceValues).unwrap();
+    assert_eq!(forced, "bytes:4");
+    let named = loader.load([
+        Source::bytes(b"hello").name("config.bin")
+    ], &ReplaceValues).unwrap();
+    assert_eq!(named, "bytes:5");
+}

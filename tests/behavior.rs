@@ -64,15 +64,16 @@ fn explicit_format_does_not_remove_a_shebang() {
 }
 
 #[test]
-fn cfg_serialization_round_trips_with_runtime_format_selection() {
+fn automatic_serialization_round_trips_with_runtime_format_selection() {
     let registry = formats();
     let map = BTreeMap::from([("port".to_owned(), "80".to_owned())]);
-    let doc = registry.to_cfg_vec(&map, "colon").unwrap();
+    let doc = registry.to_auto_vec(&map, "colon", "cfg").unwrap();
     assert!(doc.starts_with(b"#!colon\n"));
     let read = registry.from_slice(&doc, Options::new().name("config.cfg")).unwrap();
     assert_eq!(map, read);
-    let default = registry.to_cfg_vec(&map, "equals").unwrap();
-    assert!(!default.starts_with(b"#!"));
+    let default = registry.to_auto_vec(&map, "equals", "cfg").unwrap();
+    assert!(default.starts_with(b"#!equals\n"));
+    assert_eq!(registry.from_slice(&default, Options::new().name("config.cfg")).unwrap(), map);
 }
 
 #[test]
@@ -104,4 +105,69 @@ fn parse_errors_cannot_display_secrets_returned_by_user_codecs() {
     )).unwrap();
     let err = registry.from_slice(b"password=swordfish", Options::new().format("conf")).unwrap_err();
     assert!(!format!("{err:?} {err}").contains("swordfish"));
+}
+
+#[test]
+fn cfg_is_automatically_registered_with_a_loader_supplied_default() {
+    let mut registry = formats();
+    let cfg = registry.from_slice(
+        b"port:80\n", Options::new().name("app.cfg").default_format("colon")
+    ).unwrap();
+    assert_eq!(cfg["port"], "80");
+    let header = registry.from_slice(
+        b"#!equals\nport=81\n", Options::new().name("app.cfg").default_format("colon")
+    ).unwrap();
+    assert_eq!(header["port"], "81");
+
+    registry.register_auto(["cfg", ".conf"], "colon").unwrap();
+    let pinned = registry.from_slice(
+        b"port:82\n", Options::new().name("app.cfg").default_format("equals")
+    ).unwrap();
+    assert_eq!(pinned["port"], "82");
+    let document = registry.to_auto_vec(&pinned, "colon", "cfg").unwrap();
+    assert!(!document.starts_with(b"#!"));
+
+    registry.register_extension("cfg", "equals").unwrap();
+    let fixed = registry.from_slice(
+        b"port=83\n", Options::new().name("app.cfg").default_format("colon")
+    ).unwrap();
+    assert_eq!(fixed["port"], "83");
+    assert!(matches!(
+        registry.from_slice(b"#!colon\nport:83\n", Options::new().name("app.cfg")),
+        Err(Error::Parse { .. })
+    ));
+    assert!(matches!(registry.to_auto_vec(&fixed, "equals", "cfg"), Err(Error::UnsupportedExtension)));
+}
+
+#[test]
+fn any_extension_can_opt_into_auto_format_selection() {
+    let mut registry = formats();
+    registry.register_auto(["conf"], "colon").unwrap();
+    let detected = registry.from_slice(
+        b"#!equals\nport=200\n", Options::new().name("app.conf")
+    ).unwrap();
+    assert_eq!(detected["port"], "200");
+    let fallback = registry.from_slice(
+        b"port:201\n", Options::new().name("app.conf").default_format("equals")
+    ).unwrap();
+    assert_eq!(fallback["port"], "201");
+    assert!(matches!(registry.register_auto(["co"], "equals"), Err(Error::InvalidRegistration)));
+    assert!(matches!(registry.register_extension("eq", "colon"), Err(Error::InvalidRegistration)));
+    assert!(matches!(
+        registry.from_slice(b"port=202\n", Options::new().name("app.unknown")),
+        Err(Error::UnsupportedExtension)
+    ));
+}
+
+#[test]
+fn unnamed_streams_use_an_explicit_default_or_registered_header() {
+    let registry = formats();
+    let value = registry.from_reader(
+        &b"port:300\n"[..], Options::new().default_format("colon")
+    ).unwrap();
+    assert_eq!(value["port"], "300");
+    let header = registry.from_slice(
+        b"#!equals\nport=301\n", Options::new().default_format("colon")
+    ).unwrap();
+    assert_eq!(header["port"], "301");
 }

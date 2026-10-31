@@ -73,13 +73,15 @@ pub struct Options<'a> {
     pub format: Option<&'a str>,
     /// Logical source name; only its final extension is examined.
     pub name: Option<&'a str>,
+    /// Default for unnamed inputs when automatic selection finds no format header.
+    pub default_format: Option<&'a str>,
     /// Maximum accepted source length in bytes.
     pub max_bytes: usize,
 }
 
 impl Default for Options<'_> {
     fn default() -> Self {
-        Self { format: None, name: None, max_bytes: DEFAULT_MAX_SOURCE_BYTES }
+        Self { format: None, name: None, default_format: None, max_bytes: DEFAULT_MAX_SOURCE_BYTES }
     }
 }
 
@@ -93,6 +95,10 @@ impl<'a> Options<'a> {
     /// Force a registered format name.
     #[must_use]
     pub fn format(mut self, format: &'a str) -> Self { self.format = Some(format); self }
+    /// Choose the fallback for unnamed bytes/readers without a matching header.
+    /// An auto-detect extension with its own default takes precedence.
+    #[must_use]
+    pub fn default_format(mut self, format: &'a str) -> Self { self.default_format = Some(format); self }
     /// Set the byte budget for this input.
     #[must_use]
     pub fn max_bytes(mut self, max_bytes: usize) -> Self { self.max_bytes = max_bytes; self }
@@ -110,13 +116,19 @@ pub struct Detection<'a> {
 const SHEBANG_MAX_BYTES: usize = 256;
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
+#[derive(Debug, Clone)]
+enum ExtensionMode {
+    Fixed(String),
+    Auto(Option<String>),
+}
+
 /// A runtime registry of parser/serializer implementations for one value model.
 ///
-/// Formats have no built-in aliases, extensions, marker syntax or default.
-/// Every association must be registered explicitly by the application.
+/// The .cfg extension starts in auto-detect mode with its default supplied
+/// by each loader. All other extensions and codecs are registered by callers.
 pub struct Formats<V> {
     codecs: BTreeMap<String, Box<dyn Codec<V>>>,
-    suffixes: BTreeMap<String, String>,
+    suffixes: BTreeMap<String, ExtensionMode>,
     markers: Vec<(Vec<u8>, String)>,
     fallback: Option<String>,
 }
@@ -133,7 +145,12 @@ impl<V> fmt::Debug for Formats<V> {
 
 impl<V> Default for Formats<V> {
     fn default() -> Self {
-        Self { codecs: BTreeMap::new(), suffixes: BTreeMap::new(), markers: Vec::new(), fallback: None }
+        Self {
+            codecs: BTreeMap::new(),
+            suffixes: BTreeMap::from([("cfg".to_owned(), ExtensionMode::Auto(None))]),
+            markers: Vec::new(),
+            fallback: None,
+        }
     }
 }
 
@@ -157,24 +174,71 @@ impl<V> Formats<V> {
         S: AsRef<str>,
     {
         let canonical = normalize(name)?;
-        if canonical == "cfg" || self.codecs.contains_key(&canonical) {
+        if self.codecs.contains_key(&canonical) {
             return Err(Error::InvalidRegistration);
         }
         let extensions: Vec<String> = extensions.into_iter()
             .map(|name| normalize(name.as_ref().trim_start_matches('.')))
             .collect::<Result<_, _>>()?;
-        if extensions.iter().any(|ext| ext == "cfg" || self.suffixes.contains_key(ext)) {
+        if extensions.iter().any(|ext| ext != "cfg" && self.suffixes.contains_key(ext)) {
             return Err(Error::InvalidRegistration);
         }
         if extensions.iter().enumerate().any(|(i, ext)| extensions[..i].contains(ext)) {
             return Err(Error::InvalidRegistration);
         }
-        for ext in extensions { self.suffixes.insert(ext, canonical.clone()); }
+        for ext in extensions { self.suffixes.insert(ext, ExtensionMode::Fixed(canonical.clone())); }
         self.codecs.insert(canonical, Box::new(codec));
         Ok(())
     }
 
-    /// Set the fallback handler for anonymous documents and `.cfg` files.
+    /// Assign a fixed codec to a file extension.
+    ///
+    /// The automatically registered extension can be overridden. Other
+    /// previously assigned extensions cannot be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unregistered formats, invalid or conflicting extensions.
+    pub fn register_extension(&mut self, extension: &str, format: &str) -> Result<(), Error> {
+        let canonical = self.canonical(format)?.to_owned();
+        let extension = normalize(extension.trim_start_matches('.'))?;
+        if extension != "cfg" && self.suffixes.contains_key(&extension) {
+            return Err(Error::InvalidRegistration);
+        }
+        self.suffixes.insert(extension, ExtensionMode::Fixed(canonical));
+        Ok(())
+    }
+
+    /// Register an extension that checks headers and markers before its default.
+    ///
+    /// Can override the automatically registered extension; the other
+    /// registered extensions reject collisions.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unregistered defaults, invalid extensions and collisions.
+    pub fn register_auto<I, S>(&mut self, extensions: I, default_format: &str) -> Result<(), Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let canonical = self.canonical(default_format)?.to_owned();
+        let extensions: Vec<String> = extensions.into_iter()
+            .map(|ext| normalize(ext.as_ref().trim_start_matches('.')))
+            .collect::<Result<_, _>>()?;
+        if extensions.is_empty()
+            || extensions.iter().any(|ext| ext != "cfg" && self.suffixes.contains_key(ext))
+            || extensions.iter().enumerate().any(|(i, ext)| extensions[..i].contains(ext))
+        {
+            return Err(Error::InvalidRegistration);
+        }
+        for ext in extensions {
+            self.suffixes.insert(ext, ExtensionMode::Auto(Some(canonical.clone())));
+        }
+        Ok(())
+    }
+
+    /// Set the registry fallback for unnamed inputs when no per-call default exists.
     ///
     /// # Errors
     ///
@@ -186,8 +250,8 @@ impl<V> Formats<V> {
 
     /// Associate a native document prefix with a registered codec.
     ///
-    /// Markers are compared before falling back on anonymous or `.cfg` input.
-    /// They never override an explicit format or a registered non-`.cfg` suffix.
+    /// Markers are checked for unnamed documents and auto-detect extensions.
+    /// They never override an explicit format or fixed extension.
     ///
     /// # Errors
     ///
@@ -210,28 +274,28 @@ impl<V> Formats<V> {
             .ok_or(Error::UnsupportedFormat)
     }
 
-    /// Select the codec for one input, without trying parsers until one succeeds.
+    /// Select the registered codec without speculative parsing.
     ///
-    /// A recognized `#!name` or `#!/path/name` directive is removed only for
-    /// anonymous or `.cfg` input. The special `.cfg` name requires a fallback
-    /// format or a registered directive/marker.
+    /// Explicit formats and fixed extensions bypass detection. Auto-detect
+    /// extensions honor registered headers/markers before their default.
+    /// The pre-registered .cfg extension inherits the per-call default.
+    /// Unnamed sources use that same default or the registry fallback.
     ///
     /// # Errors
     ///
-    /// Rejects unknown extension/format, invalid shebang, and oversized input.
+    /// Rejects unknown extensions, invalid directives and oversized input.
     pub fn detect<'a>(&'a self, input: &'a [u8], options: Options<'_>) -> Result<Detection<'a>, Error> {
         if input.len() > options.max_bytes { return Err(Error::TooLarge { limit: options.max_bytes }); }
         let payload = input.strip_prefix(UTF8_BOM).unwrap_or(input);
         if let Some(name) = options.format {
             return Ok(Detection { format: self.canonical(name)?, payload });
         }
-        if let Some(name) = options.name {
-            if let Some(extension) = extension(name) {
-                if extension != "cfg" {
-                    let canonical = self.suffixes.get(&extension).ok_or(Error::UnsupportedExtension)?;
-                    return Ok(Detection { format: canonical, payload });
-                }
-            }
+        let mode = options.name
+            .and_then(extension)
+            .map(|ext| self.suffixes.get(&ext).ok_or(Error::UnsupportedExtension))
+            .transpose()?;
+        if let Some(ExtensionMode::Fixed(name)) = mode {
+            return Ok(Detection { format: name, payload });
         }
         if payload.starts_with(b"#!") {
             let end = payload.iter().position(|b| *b == b'\n').unwrap_or(payload.len());
@@ -246,7 +310,15 @@ impl<V> Formats<V> {
         if let Some((_, name)) = self.markers.iter().find(|(prefix, _)| payload.starts_with(prefix)) {
             return Ok(Detection { format: name, payload });
         }
-        Ok(Detection { format: self.fallback.as_deref().ok_or(Error::NoDefaultFormat)?, payload })
+        let format = match mode {
+            Some(ExtensionMode::Auto(Some(default))) => default.as_str(),
+            Some(ExtensionMode::Auto(None)) | None => match options.default_format {
+                Some(name) => self.canonical(name)?,
+                None => self.fallback.as_deref().ok_or(Error::NoDefaultFormat)?,
+            },
+            Some(ExtensionMode::Fixed(_)) => unreachable!("fixed extension already returned"),
+        };
+        Ok(Detection { format, payload })
     }
 
     /// Decode bytes with the selected registered codec.
@@ -376,36 +448,40 @@ impl<V> Formats<V> {
         Ok(())
     }
 
-    /// Serialize any Serde type as a self-describing `.cfg` document.
+    /// Serialize a Serde value for a registered auto-detect extension.
     ///
-    /// The supplied serializer first constructs the application-owned
-    /// intermediate value. The selected codec encodes that value, adding a
-    /// format shebang when it differs from the registry fallback.
+    /// The supplied serializer first converts the typed input into the
+    /// consumer-owned value. The output is marked when necessary.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Conversion`] or a safe format/encoding error.
-    pub fn to_cfg_vec_typed<T, S>(&self, value: &T, name: &str, serializer: S) -> Result<Vec<u8>, Error>
+    /// Rejects unknown/fixed extensions and failed Serde conversion.
+    pub fn to_auto_vec_typed<T, S>(&self, value: &T, name: &str, extension: &str, serializer: S) -> Result<Vec<u8>, Error>
     where
         T: Serialize + ?Sized,
         S: Serializer<Ok = V>,
     {
         let intermediate = value.serialize(serializer).map_err(|_| Error::Conversion)?;
-        self.to_cfg_vec(&intermediate, name)
+        self.to_auto_vec(&intermediate, name, extension)
     }
 
-    /// Serialize a self-describing `.cfg` file.
+    /// Serialize for a registered auto-detect extension.
     ///
-    /// The fallback format is written without a directive; any other codec
-    /// uses `#!<name>`. This method does not modify the value.
+    /// If the extension has a pinned default, its native format needs no
+    /// header. An unpinned extension always adds a format header so output
+    /// remains self-describing regardless of the loader's default.
     ///
     /// # Errors
     ///
-    /// Returns a sanitized codec or unsupported-format error.
-    pub fn to_cfg_vec(&self, value: &V, name: &str) -> Result<Vec<u8>, Error> {
+    /// Rejects unknown/fixed extensions and codec encoding failures.
+    pub fn to_auto_vec(&self, value: &V, name: &str, extension: &str) -> Result<Vec<u8>, Error> {
         let canonical = self.canonical(name)?;
+        let ext = normalize(extension.trim_start_matches('.'))?;
+        let Some(ExtensionMode::Auto(default)) = self.suffixes.get(&ext) else {
+            return Err(Error::UnsupportedExtension);
+        };
         let mut bytes = self.to_vec(value, canonical)?;
-        if self.fallback.as_deref() != Some(canonical) {
+        if default.as_deref() != Some(canonical) {
             let mut with_header = format!("#!{canonical}\n").into_bytes();
             with_header.append(&mut bytes);
             return Ok(with_header);

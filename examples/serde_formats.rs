@@ -115,6 +115,14 @@ pub fn run() -> Result<(), Error> {
     )?;
     assert_eq!(from_json, vec![10, 20, 30]);
 
+    // A single loader default covers unnamed streams and unmarked .cfg files.
+    let streamed: Config = Loader::new(&formats).default_format("json")
+        .merge(Merge::Replace)
+        .load_typed([Source::reader(std::io::Cursor::new(
+            br#"{"name":"demo","server":{"host":"localhost","port":8000}}"#,
+        ))], &ValueMerge)?;
+    assert_eq!(streamed, from_toml);
+
     let bad: Error = formats.from_slice_typed::<Config>(
         br#"{"name":"swordfish","server":{"host":"example.org","port":"invalid"}}"#,
         Options::new().format("json"),
@@ -131,7 +139,7 @@ pub fn run() -> Result<(), Error> {
     let from_toml_output: Config = formats.from_slice_typed(&toml, Options::new().format("toml"))?;
     assert_eq!(typed, from_toml_output);
 
-    let yaml = formats.to_cfg_vec_typed(&typed, "yaml", serde_json::value::Serializer)?;
+    let yaml = formats.to_auto_vec_typed(&typed, "yaml", "cfg", serde_json::value::Serializer)?;
     assert!(yaml.starts_with(b"#!yaml\n"));
     let round_trip: Config = formats.from_slice_typed(&yaml, Options::new().name("app.cfg"))?;
     assert_eq!(typed, round_trip);

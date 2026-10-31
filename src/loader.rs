@@ -126,6 +126,7 @@ impl<'a> Source<'a> {
 pub struct Loader<'f, V> {
     formats: &'f Formats<V>,
     strategy: Merge,
+    default_format: Option<String>,
     max_source_bytes: usize,
     max_total_bytes: usize,
     max_depth: usize,
@@ -135,7 +136,7 @@ impl<'f, V> Loader<'f, V> {
     /// Create a loader with deep merge and bounded source reads.
     #[must_use]
     pub fn new(formats: &'f Formats<V>) -> Self {
-        Self { formats, strategy: Merge::Deep,
+        Self { formats, strategy: Merge::Deep, default_format: None,
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
             max_depth: DEFAULT_MAX_DEPTH }
@@ -144,6 +145,14 @@ impl<'f, V> Loader<'f, V> {
     /// Select how the consumer's value adapter combines layers.
     #[must_use]
     pub fn merge(mut self, strategy: Merge) -> Self { self.strategy = strategy; self }
+
+    /// Set the fallback for unnamed streams and unpinned auto-detect extensions.
+    /// Per-source format overrides and explicit extension defaults take priority.
+    #[must_use]
+    pub fn default_format(mut self, format: impl Into<String>) -> Self {
+        self.default_format = Some(format.into());
+        self
+    }
 
     /// Limit the total bytes of any single source.
     #[must_use]
@@ -270,7 +279,12 @@ impl<'f, V> Loader<'f, V> {
         }
         *bytes_total = bytes_total.checked_add(bytes.len())
             .ok_or(Error::TooLarge { limit: self.max_total_bytes })?;
-        let opts = Options { format: source.format, name: name.as_deref(), max_bytes: limit };
+        let opts = Options {
+            format: source.format,
+            name: name.as_deref(),
+            default_format: self.default_format.as_deref(),
+            max_bytes: limit,
+        };
         self.formats.from_slice(bytes.as_ref(), opts)
     }
 }

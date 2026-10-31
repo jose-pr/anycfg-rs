@@ -38,11 +38,20 @@ pub enum Error {
     /// A shebang is malformed or exceeds the scanner limit.
     InvalidShebang,
     /// Input bytes do not encode valid UTF-8 where UTF-8 is required.
-    InvalidUtf8 { offset: usize },
+    InvalidUtf8 {
+        /// Byte offset of the first invalid UTF-8 sequence.
+        offset: usize,
+    }
     /// A document exceeded the configured byte limit.
-    TooLarge { limit: usize },
+    TooLarge {
+        /// Maximum permitted document or input size, in bytes.
+        limit: usize,
+    }
     /// A value adapter rejected the document's depth.
-    TooDeep { limit: usize },
+    TooDeep {
+        /// Maximum permitted nesting depth provided to the value adapter.
+        limit: usize,
+    }
     /// No present sources were supplied.
     NoSources,
     /// A selected merge policy could not merge the values.
@@ -50,11 +59,26 @@ pub enum Error {
     /// The caller's value conversion failed.
     Conversion,
     /// A registered decoder rejected the document.
-    Parse { format: String, line: Option<usize>, column: Option<usize> },
+    Parse {
+        /// Registered codec name that rejected the document.
+        format: String,
+        /// Optional one-based source line reported by the codec.
+        line: Option<usize>,
+        /// Optional one-based source column reported by the codec.
+        column: Option<usize>,
+    }
     /// A registered encoder rejected the value.
-    Serialize { format: String },
+    Serialize {
+        /// Registered codec name that could not encode the value.
+        format: String,
+    }
     /// A source failed to read, decode, validate or merge.
-    Source { index: usize, cause: Box<Error> },
+    Source {
+        /// Zero-based index of the failing source in the input iterator.
+        index: usize,
+        /// Error raised while reading, decoding, validating, or merging this source.
+        cause: Box<Error>,
+    }
     /// The user's home directory could not be determined.
     HomeUnavailable,
     /// A default configuration filename was missing or invalid.

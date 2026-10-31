@@ -104,7 +104,7 @@ fn shallow_and_replace_are_adapter_controlled() {
 }
 
 #[test]
-fn caller_can_convert_the_final_value_without_library_serde_dependency() {
+fn caller_can_convert_the_final_value_with_custom_callback() {
     let registry = registry();
     let port: u16 = Loader::new(&registry)
         .load_as([Source::text("port=8080\n")], &TreeAdapter, |root| {

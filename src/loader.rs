@@ -6,6 +6,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
+
 use crate::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, DEFAULT_MAX_TOTAL_BYTES, Error, Formats, Options};
 
 /// How later values affect accumulated configuration.
@@ -117,8 +120,8 @@ impl<'a> Source<'a> {
 
 /// Load and combine registered-format documents as a consumer-owned value type.
 ///
-/// Input is limited before a decoder is called. The loader itself has no
-/// dependency on any serializer or intermediate value representation.
+/// Input is limited before a decoder is called. The loader has no dependency on a concrete document format or a fixed
+/// intermediate value representation.
 #[derive(Debug)]
 pub struct Loader<'f, V> {
     formats: &'f Formats<V>,
@@ -203,6 +206,28 @@ impl<'f, V> Loader<'f, V> {
     {
         let value = self.load(sources, adapter)?;
         convert(value).map_err(|_| Error::Conversion)
+    }
+
+    /// Merge sources and deserialize the result into a Serde type.
+    ///
+    /// The value model `V` is selected by the consumer and must implement
+    /// [`serde::Deserializer`]. The merge adapter retains control of layering
+    /// and special value semantics. `T` may be any owned Serde-deserializable
+    /// type; no specific JSON, TOML, or YAML value type is required.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Conversion`] for a target-type mismatch, and the
+    /// usual source/merge errors before conversion.
+    pub fn load_typed<'a, I, S, M, T>(&self, sources: I, adapter: &M) -> Result<T, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<Option<Source<'a>>>,
+        M: MergeValues<V>,
+        V: for<'de> Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        T::deserialize(self.load(sources, adapter)?).map_err(|_| Error::Conversion)
     }
 
     /// Load sources or return a caller-supplied default if all were absent.

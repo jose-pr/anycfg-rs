@@ -5,6 +5,9 @@ use core::marker::PhantomData;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::{DEFAULT_MAX_SOURCE_BYTES, Error};
 
 /// Safe parser location information, without an input excerpt or error message.
@@ -259,6 +262,23 @@ impl<V> Formats<V> {
         })
     }
 
+    /// Decode one registered document and deserialize its value into a Serde type.
+    ///
+    /// The consumer's value type must implement [`serde::Deserializer`]. The
+    /// registered codec still decides how source bytes become that value;
+    /// the library never converts through a particular document format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Conversion`] if the value cannot deserialize as `T`.
+    pub fn from_slice_typed<T>(&self, input: &[u8], options: Options<'_>) -> Result<T, Error>
+    where
+        V: for<'de> Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        T::deserialize(self.from_slice(input, options)?).map_err(|_| Error::Conversion)
+    }
+
     /// Decode UTF-8 text with the selected registered codec.
     ///
     /// # Errors
@@ -266,6 +286,19 @@ impl<V> Formats<V> {
     /// Returns safe selection and parse errors.
     pub fn from_str(&self, input: &str, options: Options<'_>) -> Result<V, Error> {
         self.from_slice(input.as_bytes(), options)
+    }
+
+    /// Decode UTF-8 text and deserialize its value into a Serde type.
+    ///
+    /// # Errors
+    ///
+    /// Returns safe selection, parse or type conversion errors.
+    pub fn from_str_typed<T>(&self, input: &str, options: Options<'_>) -> Result<T, Error>
+    where
+        V: for<'de> Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        self.from_slice_typed(input.as_bytes(), options)
     }
 
     /// Read a bounded byte stream, then decode with a registered codec.
@@ -280,6 +313,19 @@ impl<V> Formats<V> {
         self.from_slice(&bytes, options)
     }
 
+    /// Decode a bounded reader and deserialize its value into a Serde type.
+    ///
+    /// # Errors
+    ///
+    /// Returns safe I/O, size, parse or type conversion errors.
+    pub fn from_reader_typed<T>(&self, input: impl Read, options: Options<'_>) -> Result<T, Error>
+    where
+        V: for<'de> Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        T::deserialize(self.from_reader(input, options)?).map_err(|_| Error::Conversion)
+    }
+
     /// Serialize a value with a named registered codec.
     ///
     /// # Errors
@@ -289,6 +335,25 @@ impl<V> Formats<V> {
         let canonical = self.canonical(name)?;
         self.codecs.get(canonical).ok_or(Error::UnsupportedFormat)?
             .encode(value).map_err(|_| Error::Serialize { format: canonical.to_owned() })
+    }
+
+    /// Serialize any Serde type through a consumer-chosen value serializer.
+    ///
+    /// `serializer` converts the typed input into the same `V` used by
+    /// registered codecs. The selected codec then encodes `V` as bytes.
+    /// No serialization format is selected by this conversion step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Conversion`] for failed Serde conversion, or a
+    /// sanitized codec error if the converted value cannot be encoded.
+    pub fn to_vec_typed<T, S>(&self, value: &T, name: &str, serializer: S) -> Result<Vec<u8>, Error>
+    where
+        T: Serialize + ?Sized,
+        S: Serializer<Ok = V>,
+    {
+        let intermediate = value.serialize(serializer).map_err(|_| Error::Conversion)?;
+        self.to_vec(&intermediate, name)
     }
 
     /// Serialize a value with the native format's bytes and UTF-8 decoding.
@@ -309,6 +374,24 @@ impl<V> Formats<V> {
     pub fn to_writer(&self, mut writer: impl Write, value: &V, name: &str) -> Result<(), Error> {
         writer.write_all(&self.to_vec(value, name)?)?;
         Ok(())
+    }
+
+    /// Serialize any Serde type as a self-describing `.cfg` document.
+    ///
+    /// The supplied serializer first constructs the application-owned
+    /// intermediate value. The selected codec encodes that value, adding a
+    /// format shebang when it differs from the registry fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Conversion`] or a safe format/encoding error.
+    pub fn to_cfg_vec_typed<T, S>(&self, value: &T, name: &str, serializer: S) -> Result<Vec<u8>, Error>
+    where
+        T: Serialize + ?Sized,
+        S: Serializer<Ok = V>,
+    {
+        let intermediate = value.serialize(serializer).map_err(|_| Error::Conversion)?;
+        self.to_cfg_vec(&intermediate, name)
     }
 
     /// Serialize a self-describing `.cfg` file.

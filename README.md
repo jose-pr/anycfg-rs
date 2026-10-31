@@ -21,7 +21,7 @@ sources, not a published crate or verified CI run.
 - **Three strategies** — `Replace`, `Shallow` and `Deep` (the default), with arrays and scalar values replaced rather than appended.
 - **Format detection** — a `.cfg` document uses `#!json`, `#!yaml`, `#!toml` or a `%YAML` directive; without a marker it is TOML. `.json`, `.yaml`, `.yml` and `.toml` select their format by name.
 - **Serde** — decode one source directly into any `Deserialize` type, or merge several sources and deserialize once into a `DeserializeOwned` type.
-- **Bounded reads** — 8 MiB per source by default, 64 MiB across a loader; no implicit file discovery, commands, templates or includes.
+- **Bounded reads** — 8 MiB per source and 64 MiB across a loader by default, including remaining-budget limits for streams and a 64-level nesting limit for every merged source; no implicit file discovery, commands, templates or includes.
 - **Serialization** — generate plain format text, or `.cfg` text tagged for JSON and YAML.
 
 ## Installation

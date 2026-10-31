@@ -44,8 +44,9 @@ Format selection: explicit `format` wins; recognized non-`.cfg` suffix wins
 otherwise; a `.cfg` or anonymous source uses a recognized `#!` first line or
 `%YAML` marker; otherwise TOML. A recognized shebang is stripped only when
 selected by the header. Invalid extensions and unknown shebang formats fail.
-`name` is a logical hint; it is never opened. `from_path` is the separate
-filesystem convenience. Direct slice/string methods support borrowing where
+`name` is a logical hint; it is never opened. `detect` also rejects inputs
+exceeding `max_bytes` even when no deserialization is requested. `from_path`
+is the separate filesystem convenience. Direct slice/string methods support borrowing where
 supported by a backend. Reader/path methods buffer and return owned data.
 
 ## Sources (`anycfg::Source`)
@@ -84,13 +85,17 @@ impl Loader {
 ```
 
 Default strategy: `Merge::Deep`; default budgets: 8 MiB per source, 64 MiB
-combined; recursive object merging stops at 64 levels. Sources apply left
+combined; every layer is validated to 64 nested object/array levels.
+Sources apply left
 to right; later values win. `Replace` replaces the root. `Shallow` merges
 only root object properties. `Deep` merges object properties recursively,
 replacing arrays, scalars and null. Shallow/deep merging requires both root
 documents to be objects. No sources is an error, not an empty object.
 
-Every layer is decoded into a `serde_json::Value`, the values merge there,
+Every layer is decoded into a `serde_json::Value` and depth checked before
+merging, including a source used alone or with `Replace`. Reader inputs are
+limited by both their per-source cap and the remaining combined budget (with
+at most one extra byte read to detect overflow). The values merge there,
 and the final value deserializes into `T` once. Therefore, `load()` does not
 promise preservation of TOML datetime types, unusual YAML types, number
 spelling, or insertion order. A single-source direct `from_slice` does not

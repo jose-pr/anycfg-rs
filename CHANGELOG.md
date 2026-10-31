@@ -20,6 +20,8 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Require an explicit default format in `Loader::new(&formats, default_format)`;
+  registered file extensions and content markers can still take precedence.
 - Automatic format selection registered per extension; `.cfg` is enabled by
   default and inherits the loader's default format when no header matches.
 - `Formats::register_auto` to pin an extension-specific default and

@@ -90,7 +90,7 @@ impl MergeValues<Value> for ValueMerge {
 
 pub fn run() -> Result<(), Error> {
     let formats = formats()?;
-    let typed: Config = Loader::new(&formats).load_typed([
+    let typed: Config = Loader::new(&formats, "toml").load_typed([
         Source::text("name = 'demo'\n[server]\nhost = 'localhost'\nport = 8000\n").format("toml"),
         Source::text("server:\n  port: 8080\n").name("override.yaml"),
         Source::text("#!json\n{\"server\":{\"host\":\"example.org\"}}").name("local.cfg"),
@@ -116,7 +116,7 @@ pub fn run() -> Result<(), Error> {
     assert_eq!(from_json, vec![10, 20, 30]);
 
     // A single loader default covers unnamed streams and unmarked .cfg files.
-    let streamed: Config = Loader::new(&formats).default_format("json")
+    let streamed: Config = Loader::new(&formats, "json")
         .merge(Merge::Replace)
         .load_typed([Source::reader(std::io::Cursor::new(
             br#"{"name":"demo","server":{"host":"localhost","port":8000}}"#,

@@ -12,7 +12,7 @@ selection and source bookkeeping. The consumer owns data interpretation.
 - **Detection:** explicit choice, fixed extension, or automatic extension
   selection (registered headers/markers before its default), then loader or
   registry fallback. The `.cfg` extension is auto-registered with an unpinned
-  fallback that inherits the loader default. No speculative parsing or I/O.
+  fallback that inherits the explicitly supplied default in `Loader::new`. No speculative parsing or I/O.
 - **Value:** the decoder returns any caller-defined `V` directly, without
   converting through a generic JSON-compatible representation.
 - **Merge:** the `MergeValues<V>` adapter receives the strategy and depth budget;

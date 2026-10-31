@@ -8,7 +8,7 @@ fn main() -> Result<(), anycfg::Error> {
     ))?;
     formats.set_default("plain")?;
 
-    let result = Loader::new(&formats)
+    let result = Loader::new(&formats, "plain")
         .merge(Merge::Replace)
         .load([Source::text("base"), Source::text("user")], &ReplaceValues)?;
     println!("{result}");

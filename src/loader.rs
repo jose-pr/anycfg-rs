@@ -126,17 +126,20 @@ impl<'a> Source<'a> {
 pub struct Loader<'f, V> {
     formats: &'f Formats<V>,
     strategy: Merge,
-    default_format: Option<String>,
+    default_format: String,
     max_source_bytes: usize,
     max_total_bytes: usize,
     max_depth: usize,
 }
 
 impl<'f, V> Loader<'f, V> {
-    /// Create a loader with deep merge and bounded source reads.
+    /// Create a loader with a required default format, deep merging, and bounded reads.
+    ///
+    /// The default must name a registered codec. Explicit formats, fixed
+    /// extensions, and matching content directives take precedence.
     #[must_use]
-    pub fn new(formats: &'f Formats<V>) -> Self {
-        Self { formats, strategy: Merge::Deep, default_format: None,
+    pub fn new(formats: &'f Formats<V>, default_format: impl Into<String>) -> Self {
+        Self { formats, strategy: Merge::Deep, default_format: default_format.into(),
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
             max_depth: DEFAULT_MAX_DEPTH }
@@ -150,7 +153,7 @@ impl<'f, V> Loader<'f, V> {
     /// Per-source format overrides and explicit extension defaults take priority.
     #[must_use]
     pub fn default_format(mut self, format: impl Into<String>) -> Self {
-        self.default_format = Some(format.into());
+        self.default_format = format.into();
         self
     }
 
@@ -282,7 +285,7 @@ impl<'f, V> Loader<'f, V> {
         let opts = Options {
             format: source.format,
             name: name.as_deref(),
-            default_format: self.default_format.as_deref(),
+            default_format: Some(self.default_format.as_str()),
             max_bytes: limit,
         };
         self.formats.from_slice(bytes.as_ref(), opts)

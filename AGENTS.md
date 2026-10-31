@@ -58,8 +58,9 @@ impl<V> Formats<V> {
 public parse errors. Callers register codecs, extensions, optional native
 prefix markers, and a registry fallback. The registry pre-registers `.cfg`
 as an auto-detect extension; it is not a codec. For unnamed sources and this
-unpinned extension, the default comes from `Loader::default_format` or
-`Options::default_format`, falling back to the registry default. Other
+unpinned extension, the default comes from the required second parameter
+of `Loader::new` (or `Options::default_format` for direct reads). Direct
+`Formats` reads can still fall back to the registry default. Other
 extensions are fixed by default; callers may opt them into auto-detection
 with `register_auto`. Re-registering `.cfg` pins its default, or
 `register_extension` can make it fixed. Automatic detection recognizes a leading
@@ -117,7 +118,7 @@ pub trait MergeValues<V> {
 pub struct ReplaceValues;
 pub struct Loader<'f, V> { /* private fields */ }
 impl<'f, V> Loader<'f, V> {
-    pub fn new(formats: &'f Formats<V>) -> Self;
+    pub fn new(formats: &'f Formats<V>, default_format: impl Into<String>) -> Self;
     pub fn merge(self, strategy: Merge) -> Self;
     pub fn default_format(self, format: impl Into<String>) -> Self;
     pub fn max_source_bytes(self, limit: usize) -> Self;
@@ -135,7 +136,10 @@ impl<'f, V> Loader<'f, V> {
 }
 ```
 
-`Merge::Deep` is the default. `load_typed` converts the final merged `V`
+`Merge::Deep` is the default merge strategy. The loader's required
+`default_format` must name a registered codec; automatic detection uses it
+when no source marker wins. The `default_format` builder can change it later.
+`load_typed` converts the final merged `V`
 through its Serde deserializer into any owned Serde type. `load_as` instead
 accepts a custom conversion closure. Both sanitize conversion errors.
 Merge strategies are names given to the adapter, not built-in manipulation

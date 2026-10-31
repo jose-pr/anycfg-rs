@@ -77,7 +77,7 @@ impl MergeValues<Node> for TreeAdapter {
 #[test]
 fn mixed_layers_merge_deep_without_a_library_value_type() {
     let registry = registry();
-    let merged = Loader::new(&registry).load([
+    let merged = Loader::new(&registry, "pairs").load([
         Source::text("server.host=base\nserver.port=80\nname=base\n"),
         Source::text("server.port=81\nname=override\n"),
     ], &TreeAdapter).unwrap();
@@ -91,13 +91,13 @@ fn mixed_layers_merge_deep_without_a_library_value_type() {
 #[test]
 fn shallow_and_replace_are_adapter_controlled() {
     let registry = registry();
-    let shallow = Loader::new(&registry).merge(Merge::Shallow)
+    let shallow = Loader::new(&registry, "pairs").merge(Merge::Shallow)
         .load([Source::text("a.x=1\n"), Source::text("a.y=2\n")], &TreeAdapter).unwrap();
     let Node::Map(map) = shallow else { panic!() };
     let Node::Map(a) = &map["a"] else { panic!() };
     assert!(!a.contains_key("x"));
     assert!(a.contains_key("y"));
-    let value = Loader::new(&registry).merge(Merge::Replace)
+    let value = Loader::new(&registry, "pairs").merge(Merge::Replace)
         .load([Source::text("a.x=1\n"), Source::text("b=2\n")], &ReplaceValues).unwrap();
     let Node::Map(map) = value else { panic!() };
     assert!(!map.contains_key("a"));
@@ -106,7 +106,7 @@ fn shallow_and_replace_are_adapter_controlled() {
 #[test]
 fn caller_can_convert_the_final_value_with_custom_callback() {
     let registry = registry();
-    let port: u16 = Loader::new(&registry)
+    let port: u16 = Loader::new(&registry, "pairs")
         .load_as([Source::text("port=8080\n")], &TreeAdapter, |root| {
             let Node::Map(map) = root else { return Err(()) };
             let Some(Node::Text(port)) = map.get("port") else { return Err(()) };
@@ -118,7 +118,7 @@ fn caller_can_convert_the_final_value_with_custom_callback() {
 #[test]
 fn absent_sources_can_be_passed_as_options() {
     let registry = registry();
-    let got = Loader::new(&registry).load([
+    let got = Loader::new(&registry, "pairs").load([
         None,
         Some(Source::text("app=one\n")),
         None,
@@ -126,14 +126,14 @@ fn absent_sources_can_be_passed_as_options() {
     ], &TreeAdapter).unwrap();
     let Node::Map(map) = got else { panic!() };
     assert_eq!(map["app"], Node::Text("two".to_owned()));
-    let fallback = Loader::new(&registry).load_or([None::<Source<'_>>], &TreeAdapter, Node::Text("fallback".to_owned())).unwrap();
+    let fallback = Loader::new(&registry, "pairs").load_or([None::<Source<'_>>], &TreeAdapter, Node::Text("fallback".to_owned())).unwrap();
     assert_eq!(fallback, Node::Text("fallback".to_owned()));
 }
 
 #[test]
 fn the_adapters_depth_check_runs_even_for_one_layer() {
     let registry = registry();
-    let error = Loader::new(&registry).max_depth(1)
+    let error = Loader::new(&registry, "pairs").max_depth(1)
         .load([Source::text("nested.child=1\n")], &TreeAdapter).unwrap_err();
     assert!(matches!(error, Error::Source { index: 0, .. }));
 }
@@ -153,7 +153,7 @@ impl Read for CountingRead {
 fn source_and_total_byte_limits_stop_streams() {
     let registry = registry();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let error = Loader::new(&registry).max_total_bytes(5).max_source_bytes(10)
+    let error = Loader::new(&registry, "pairs").max_total_bytes(5).max_source_bytes(10)
         .load([Source::reader(CountingRead(calls.clone()))], &TreeAdapter).unwrap_err();
     assert!(matches!(error, Error::Source { cause, .. } if matches!(*cause, Error::TooLarge { limit: 5 })));
     assert!(calls.load(std::sync::atomic::Ordering::Relaxed) <= 6);
@@ -169,7 +169,7 @@ fn a_callback_can_define_merging_for_nonmap_types() {
         |value: &String| Ok(value.as_bytes().to_vec()),
     )).unwrap();
     registry.set_default("text").unwrap();
-    let merged = Loader::new(&registry).load([
+    let merged = Loader::new(&registry, "text").load([
         Source::text("a"), Source::text("b"),
     ], &|old: &mut String, next: String, _strategy, _depth| {
         old.push_str(&next); Ok(())
@@ -189,7 +189,7 @@ fn loader_default_format_applies_to_cfg_and_unnamed_byte_streams() {
         |value: &String| Ok(value.as_bytes().to_vec()),
     )).unwrap();
     // No registry fallback: the loader chooses the format for unnamed data.
-    let loader = Loader::new(&formats).default_format("text").merge(Merge::Replace);
+    let loader = Loader::new(&formats, "text").merge(Merge::Replace);
     let got = loader.load([
         Source::bytes(b"one"),
         Source::reader(&b"two"[..]),

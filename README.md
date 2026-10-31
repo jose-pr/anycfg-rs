@@ -55,8 +55,7 @@ formats.register("plain", ["txt"], Callbacks::new(
 ))?;
 formats.set_default("plain")?;
 
-let text = Loader::new(&formats)
-    .default_format("plain")
+let text = Loader::new(&formats, "plain")
     .merge(Merge::Replace)
     .load([Source::text("old"), Source::text("new")], &ReplaceValues)?;
 assert_eq!(text, "new");
@@ -158,18 +157,19 @@ consumer-provided value when all sources are absent.
 
 Formats are registered by callers; no parser is built into the crate.
 By default, .cfg is an auto-detect extension. Without a recognized directive
-or marker, it inherits the default specified when the loader is configured:
+or marker, it inherits the default specified when the loader is constructed:
 
 ```rust
 # use anycfg::{Formats, Loader};
 // After registering the selected format codecs:
 # fn sample<V>(formats: &Formats<V>) {
-let loader = Loader::new(formats).default_format("toml");
+let loader = Loader::new(formats, "toml");
 # let _ = loader;
 # }
 ```
 
-This same loader default applies to unnamed byte slices and byte streams.
+A loader requires an explicit default in its constructor and does not infer
+one from the registry. This default applies to unnamed byte slices and streams.
 For direct reads, use `Options::new().default_format("toml")`.
 The format name must refer to a registered codec.
 

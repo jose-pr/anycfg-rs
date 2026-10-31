@@ -41,17 +41,17 @@ pub enum Error {
     InvalidUtf8 {
         /// Byte offset of the first invalid UTF-8 sequence.
         offset: usize,
-    }
+    },
     /// A document exceeded the configured byte limit.
     TooLarge {
         /// Maximum permitted document or input size, in bytes.
         limit: usize,
-    }
+    },
     /// A value adapter rejected the document's depth.
     TooDeep {
         /// Maximum permitted nesting depth provided to the value adapter.
         limit: usize,
-    }
+    },
     /// No present sources were supplied.
     NoSources,
     /// A selected merge policy could not merge the values.
@@ -66,19 +66,19 @@ pub enum Error {
         line: Option<usize>,
         /// Optional one-based source column reported by the codec.
         column: Option<usize>,
-    }
+    },
     /// A registered encoder rejected the value.
     Serialize {
         /// Registered codec name that could not encode the value.
         format: String,
-    }
+    },
     /// A source failed to read, decode, validate or merge.
     Source {
         /// Zero-based index of the failing source in the input iterator.
         index: usize,
         /// Error raised while reading, decoding, validating, or merging this source.
         cause: Box<Error>,
-    }
+    },
     /// The user's home directory could not be determined.
     HomeUnavailable,
     /// A default configuration filename was missing or invalid.

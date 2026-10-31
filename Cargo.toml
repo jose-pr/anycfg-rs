@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "Format-neutral configuration discovery, loading, and layering"
 repository = "https://github.com/jose-pr/anycfg-rs"
+documentation = "https://jose-pr.github.io/anycfg-rs/"
 readme = "README.md"
 publish = false
 exclude = [".*", "*.local.*"]

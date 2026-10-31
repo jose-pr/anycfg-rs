@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-0.1.0--alpha.0-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/CHANGELOG.md)
 [![Rust version](https://img.shields.io/badge/rust-1.89%2B-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/Cargo.toml)
-[![Docs](https://img.shields.io/badge/docs-source-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/AGENTS.md)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://jose-pr.github.io/anycfg-rs/)
 [![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/anycfg-rs/test.yaml)](https://github.com/jose-pr/anycfg-rs/actions/workflows/test.yaml)
 
 **Configuration discovery, format dispatch, and ordered layering without choosing a parser or value model.**
@@ -10,6 +10,8 @@
 reading, automatic format selection, and a loader. Applications register their own
 codecs, define value merge semantics, and decide how results become typed data.
 The only runtime dependency is **Serde**; there are no built-in document formats.
+
+**[Documentation site](https://jose-pr.github.io/anycfg-rs/):** Getting started, format registration, automatic selection, sources, Serde, merging, standard paths and generated Rust API reference.
 
 ## Features
 

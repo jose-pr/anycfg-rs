@@ -203,6 +203,9 @@ fn suffix_format(name: &str) -> Result<Option<Format>, Error> {
 /// Returns an unsupported-format or invalid-directive error.
 /// With no name, a byte stream follows `.cfg` rules.
 pub fn detect<'de>(bytes: &'de [u8], options: Options<'_>) -> Result<Detection<'de>, Error> {
+    if bytes.len() > options.max_bytes {
+        return Err(Error::TooLarge { limit: options.max_bytes });
+    }
     let bytes = strip_bom(bytes);
     if let Some(format) = options.format {
         return Ok(Detection { format, payload: bytes });

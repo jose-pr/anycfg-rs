@@ -88,3 +88,9 @@ fn parse_errors_do_not_echo_secret_value() {
     assert!(!format!("{err:?}").contains("MY_SECRET"));
     assert!(!format!("{err}").contains("MY_SECRET"));
 }
+
+#[test]
+fn detecting_without_deserializing_obeys_the_input_budget() {
+    let error = detect(b"#!json\n{}", Options::new().max_bytes(4)).unwrap_err();
+    assert!(matches!(error, Error::TooLarge { limit: 4 }));
+}

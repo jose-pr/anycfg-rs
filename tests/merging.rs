@@ -92,3 +92,68 @@ fn two_non_object_roots_cannot_be_shallow_merged() {
     assert!(matches!(error, Error::Source { index: 1, .. }));
     assert!(error.to_string().contains("object-valued"));
 }
+
+fn nested_json(levels: usize) -> String {
+    let mut input = String::new();
+    for _ in 0..levels {
+        input.push_str("{\"a\":");
+    }
+    input.push('0');
+    for _ in 0..levels {
+        input.push('}');
+    }
+    input
+}
+
+#[test]
+fn every_layer_is_depth_checked_even_when_it_is_not_recursively_merged() {
+    let within_limit = nested_json(64);
+    let too_deep = nested_json(65);
+
+    for policy in [Merge::Deep, Merge::Shallow, Merge::Replace] {
+        let okay: serde_json::Value = Loader::new().merge(policy).load([
+            Source::text(&within_limit).format(Format::Json),
+        ]).unwrap();
+        assert!(okay.is_object());
+
+        let error = Loader::new().merge(policy).load::<serde_json::Value, _>([
+            Source::text(&too_deep).format(Format::Json),
+        ]).unwrap_err();
+        assert!(matches!(error, Error::Source { index: 0, cause }
+            if matches!(*cause, Error::TooDeep { limit: 64 })));
+    }
+}
+
+#[test]
+fn stream_reads_stop_at_the_remaining_total_byte_budget() {
+    use std::cell::Cell;
+    use std::io::Read;
+    use std::rc::Rc;
+
+    struct CountingReader {
+        bytes: Cursor<Vec<u8>>,
+        count: Rc<Cell<usize>>,
+    }
+    impl Read for CountingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.bytes.read(buffer)?;
+            self.count.set(self.count.get() + n);
+            Ok(n)
+        }
+    }
+
+    let first = b"a = 1\n";
+    let read_count = Rc::new(Cell::new(0));
+    let large_stream = CountingReader {
+        bytes: Cursor::new(vec![b'x'; 4096]),
+        count: Rc::clone(&read_count),
+    };
+    let result = Loader::new().max_source_bytes(4096).max_total_bytes(12)
+        .load::<serde_json::Value, _>([
+            Source::bytes(first),
+            Source::reader(large_stream),
+        ]);
+    assert!(matches!(result, Err(Error::Source { index: 1, cause })
+        if matches!(*cause, Error::TooLarge { limit: 12 })));
+    assert!(read_count.get() <= 12 - first.len() + 1);
+}

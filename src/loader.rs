@@ -161,24 +161,40 @@ impl Loader {
         if source.format.is_none() {
             if let Some(name) = &name { suffix_format(name)?; }
         }
+        let remaining = self.max_total_bytes.saturating_sub(*total_bytes);
+        let read_limit = self.max_source_bytes.min(remaining);
+        let exceeded_limit = if remaining < self.max_source_bytes {
+            self.max_total_bytes
+        } else {
+            self.max_source_bytes
+        };
         let bytes: Cow<'_, [u8]> = match source.input {
             Input::Bytes(bytes) => Cow::Borrowed(bytes),
-            Input::Reader(reader) => Cow::Owned(read_bounded(reader, self.max_source_bytes)?),
-            Input::Path(path) => Cow::Owned(read_bounded(File::open(path)?, self.max_source_bytes)?),
+            Input::Reader(reader) => Cow::Owned(read_source_bounded(reader, read_limit, exceeded_limit)?),
+            Input::Path(path) => Cow::Owned(read_source_bounded(File::open(path)?, read_limit, exceeded_limit)?),
         };
         if bytes.len() > self.max_source_bytes {
             return Err(Error::TooLarge { limit: self.max_source_bytes });
         }
-        *total_bytes = total_bytes.checked_add(bytes.len())
-            .ok_or(Error::TooLarge { limit: self.max_total_bytes })?;
-        if *total_bytes > self.max_total_bytes {
+        if bytes.len() > remaining {
             return Err(Error::TooLarge { limit: self.max_total_bytes });
         }
+        *total_bytes = total_bytes.checked_add(bytes.len())
+            .ok_or(Error::TooLarge { limit: self.max_total_bytes })?;
         let mut options = Options::new().max_bytes(self.max_source_bytes);
         if let Some(format) = source.format { options = options.format(format); }
         if let Some(ref name) = name { options = options.name(name); }
-        from_slice_with(bytes.as_ref(), options)
+        let next = from_slice_with(bytes.as_ref(), options)?;
+        validate_depth(&next)?;
+        Ok(next)
     }
+}
+
+fn read_source_bounded(reader: impl Read, limit: usize, exceeded_limit: usize) -> Result<Vec<u8>, Error> {
+    read_bounded(reader, limit).map_err(|error| match error {
+        Error::TooLarge { .. } => Error::TooLarge { limit: exceeded_limit },
+        other => other,
+    })
 }
 
 fn read_bounded(reader: impl Read, limit: usize) -> Result<Vec<u8>, Error> {
@@ -192,6 +208,27 @@ fn read_bounded(reader: impl Read, limit: usize) -> Result<Vec<u8>, Error> {
 
 const MAX_MERGE_DEPTH: usize = 64;
 
+// Check every layer, including paths which deep merging would never visit.
+// An explicit stack avoids recursing through input-controlled nesting.
+fn validate_depth(document: &Value) -> Result<(), Error> {
+    let mut pending = vec![(document, 0usize)];
+    while let Some((value, depth)) = pending.pop() {
+        if depth > MAX_MERGE_DEPTH {
+            return Err(Error::TooDeep { limit: MAX_MERGE_DEPTH });
+        }
+        match value {
+            Value::Object(values) => {
+                pending.extend(values.values().map(|child| (child, depth + 1)));
+            }
+            Value::Array(values) => {
+                pending.extend(values.iter().map(|child| (child, depth + 1)));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn merge_document(previous: &mut Value, later: Value, merge: Merge, depth: usize) -> Result<(), Error> {
     if merge == Merge::Replace {
         *previous = later;
@@ -199,7 +236,7 @@ fn merge_document(previous: &mut Value, later: Value, merge: Merge, depth: usize
     }
     match (previous, later) {
         (Value::Object(before), Value::Object(after)) => {
-            if depth >= MAX_MERGE_DEPTH { return Err(Error::TooDeep { limit: MAX_MERGE_DEPTH }); }
+            if depth > MAX_MERGE_DEPTH { return Err(Error::TooDeep { limit: MAX_MERGE_DEPTH }); }
             for (key, value) in after {
                 if merge == Merge::Deep {
                     if let Some(old) = before.get_mut(&key) {

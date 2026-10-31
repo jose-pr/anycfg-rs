@@ -7,7 +7,7 @@
 
 **Configuration discovery, format dispatch, and ordered layering without choosing a parser or value model.**
 `anycfg` supplies standard user/system configuration paths, bounded byte and stream
-reading, `.cfg` format selection, and a loader. Applications register their own
+reading, automatic format selection, and a loader. Applications register their own
 codecs, define value merge semantics, and decide how results become typed data.
 The only runtime dependency is **Serde**; there are no built-in document formats.
 
@@ -18,7 +18,7 @@ The only runtime dependency is **Serde**; there are no built-in document formats
 - **User-defined merging** — implement `MergeValues<V>` or pass a merge callback. `Merge::Deep`, `Shallow` and `Replace` are policy names passed to that adapter, not hard-coded map algorithms.
 - **Serde-typed values** — `Formats::from_slice_typed`, `Loader::load_typed`, and `Formats::to_vec_typed` work with `DeserializeOwned`/`Serialize` types through an application-chosen Serde value model. `load_as` remains available for custom conversion.
 - **Standard locations** — `user_config_path`, `system_config_path`, and `default_configs` provide platform defaults and system-before-user layering.
-- **Deterministic detection** — an explicit format wins, then a registered extension, then `.cfg`/anonymous shebang or a registered marker, then a caller-selected fallback. No parser guessing or command execution.
+- **Automatic format selection** — applications can register fixed extensions or auto-detect extensions with their own fallback. `.cfg` is registered for auto-detection by default, inheriting the loader's default format. Explicit choices take precedence; no speculative parsing or command execution.
 - **Resource limits** — bounded per-source and combined byte input; the value adapter validates its own nesting rules.
 
 ## Installation
@@ -56,6 +56,7 @@ formats.register("plain", ["txt"], Callbacks::new(
 formats.set_default("plain")?;
 
 let text = Loader::new(&formats)
+    .default_format("plain")
     .merge(Merge::Replace)
     .load([Source::text("old"), Source::text("new")], &ReplaceValues)?;
 assert_eq!(text, "new");
@@ -130,11 +131,11 @@ assert!(sources.len() == 2);
 
 | Module | Purpose |
 | --- | --- |
-| `anycfg::Formats<V>` | Runtime registry of format codecs and marker/extension selection |
+| `anycfg::Formats<V>` | Runtime registry of codecs and fixed/automatic extension policies |
 | `anycfg::Codec<V>` | Consumer-owned parse and serialize operations |
 | Serde typed methods | Decode `V` into `DeserializeOwned` targets; serialize `Serialize` values via a caller-selected Serde serializer |
 | `anycfg::Callbacks<V, D, E>` | Adapter from parse/encode closures to `Codec<V>` |
-| `anycfg::Loader<V>` | Load ordered sources, apply budget limits, invoke merge and conversion |
+| `anycfg::Loader<V>` | Load ordered sources, select a default format, apply budgets, merge and convert |
 | `anycfg::MergeValues<V>` | Consumer-owned merge and nesting validation |
 | `anycfg::Source` | Input as bytes, text, reader or path plus format hints |
 | Standard path functions | Discover system and per-user configuration paths |
@@ -153,15 +154,51 @@ absolute paths and `..` traversal. It does not create directories. A loader
 can receive the resulting optional sources directly; `load_or` returns the
 consumer-provided value when all sources are absent.
 
-### Format selection
+### Automatic format selection
 
-Only registered codecs are understood. `.cfg` is a generic carrier: if it
-starts with `#!<registered-name>` (including a path-like shebang) the selected
-header is removed. Without a header, it uses the registry default. Other
-registered filename extensions select their codec directly, without sniffing.
-A native format marker can be registered explicitly with `register_marker`;
-that marker is **not** stripped, because only the owning codec knows its syntax.
-A forced format does not strip shebang lines.
+Formats are registered by callers; no parser is built into the crate.
+By default, .cfg is an auto-detect extension. Without a recognized directive
+or marker, it inherits the default specified when the loader is configured:
+
+```rust
+# use anycfg::{Formats, Loader};
+// After registering the selected format codecs:
+# fn sample<V>(formats: &Formats<V>) {
+let loader = Loader::new(formats).default_format("toml");
+# let _ = loader;
+# }
+```
+
+This same loader default applies to unnamed byte slices and byte streams.
+For direct reads, use `Options::new().default_format("toml")`.
+The format name must refer to a registered codec.
+
+Extension rules can be configured independently:
+
+```rust
+# use anycfg::{Formats, Error};
+# fn configure<V>(formats: &mut Formats<V>) -> Result<(), Error> {
+formats.register_auto(["conf", "settings"], "toml")?;
+formats.register_auto(["cfg"], "yaml")?;      // Override the default for .cfg
+formats.register_extension("cfg", "json")?;   // Or make .cfg a fixed JSON extension
+# Ok(())
+# }
+```
+
+Auto-detect extensions check registered `#!format` directives and
+`register_marker` prefixes before using their default. Fixed extensions
+select their codec without inspecting headers. Native markers are left intact
+for the owning codec; selected `#!` directives are stripped. Explicit
+`Source::format` / `Options::format` overrides both kinds of extension.
+
+For self-describing output use `Formats::to_auto_vec` or
+`Formats::to_auto_vec_typed`, naming the auto-detect extension. The writer
+adds a header if the selected codec differs from a pinned extension default;
+for unpinned defaults it always adds a header so the output is portable.
+
+Precedence: explicit format > fixed extension > auto-detect directive or
+marker > pinned extension default > loader/per-call default > registry fallback.
+An unknown extension is rejected rather than guessed.
 
 ### Value contract
 

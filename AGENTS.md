@@ -28,6 +28,9 @@ impl<V> Formats<V> {
     pub fn new() -> Self;
     pub fn register<C, I, S>(&mut self, name: &str, extensions: I, codec: C) -> Result<(), Error>
       where C: Codec<V> + 'static, I: IntoIterator<Item = S>, S: AsRef<str>;
+    pub fn register_extension(&mut self, extension: &str, format: &str) -> Result<(), Error>;
+    pub fn register_auto<I, S>(&mut self, extensions: I, default_format: &str) -> Result<(), Error>
+      where I: IntoIterator<Item = S>, S: AsRef<str>;
     pub fn set_default(&mut self, name: &str) -> Result<(), Error>;
     pub fn register_marker(&mut self, name: &str, marker: &[u8]) -> Result<(), Error>;
     pub fn detect<'a>(&'a self, input: &'a [u8], options: Options<'_>) -> Result<Detection<'a>, Error>;
@@ -45,39 +48,46 @@ impl<V> Formats<V> {
       where T: serde::Serialize + ?Sized, S: serde::Serializer<Ok = V>;
     pub fn to_string(&self, value: &V, name: &str) -> Result<String, Error>;
     pub fn to_writer(&self, writer: impl std::io::Write, value: &V, name: &str) -> Result<(), Error>;
-    pub fn to_cfg_vec(&self, value: &V, name: &str) -> Result<Vec<u8>, Error>;
-    pub fn to_cfg_vec_typed<T, S>(&self, value: &T, name: &str, serializer: S) -> Result<Vec<u8>, Error>
+    pub fn to_auto_vec(&self, value: &V, name: &str, extension: &str) -> Result<Vec<u8>, Error>;
+    pub fn to_auto_vec_typed<T, S>(&self, value: &T, name: &str, extension: &str, serializer: S) -> Result<Vec<u8>, Error>
       where T: serde::Serialize + ?Sized, S: serde::Serializer<Ok = V>;
 }
 ```
 
 `CodecError` carries only positions. Codec messages are never retained in
-public parse errors. Caller registers names and extensions, optional native
-prefix markers, and an explicit fallback; no format is pre-registered. A
-registered extension takes priority over shebang detection; anonymous and
-`.cfg` inputs recognize a leading `#!name`/`#!/path/name`, then registered
-native markers, then the selected fallback. A forced format retains the
-shebang. Native markers remain in the payload. One leading UTF-8 BOM is
-removed; raw input otherwise reaches the selected codec unchanged.
+public parse errors. Callers register codecs, extensions, optional native
+prefix markers, and a registry fallback. The registry pre-registers `.cfg`
+as an auto-detect extension; it is not a codec. For unnamed sources and this
+unpinned extension, the default comes from `Loader::default_format` or
+`Options::default_format`, falling back to the registry default. Other
+extensions are fixed by default; callers may opt them into auto-detection
+with `register_auto`. Re-registering `.cfg` pins its default, or
+`register_extension` can make it fixed. Automatic detection recognizes a leading
+`#!name` or `#!/path/name` (stripping the header), and registered native markers
+(which remain in the payload). Explicit formats and fixed extensions do not
+inspect headers. A single UTF-8 BOM is removed.
 
 ```rust
 pub struct Options<'a> {
     pub format: Option<&'a str>,
     pub name: Option<&'a str>,
+    pub default_format: Option<&'a str>,
     pub max_bytes: usize,
 }
 impl<'a> Options<'a> {
     pub fn new() -> Self;
     pub fn name(self, name: &'a str) -> Self;
     pub fn format(self, format: &'a str) -> Self;
+    pub fn default_format(self, format: &'a str) -> Self;
     pub fn max_bytes(self, limit: usize) -> Self;
 }
 pub struct Detection<'a> { pub format: &'a str, pub payload: &'a [u8] }
 ```
 
 Default per-input cap: 8 MiB. `Options::name` is a name hint, not an open
-operation. `Formats::to_cfg_vec` adds a self-describing shebang for a nondefault
-format; the fallback writes unmarked.
+operation. `Formats::to_auto_vec` is for a registered auto-detect extension;
+when the extension has no pinned default, output always carries a header.
+When pinned, output is unmarked only if the codec matches that default.
 
 ## Sources (`anycfg::Source`)
 
@@ -109,6 +119,7 @@ pub struct Loader<'f, V> { /* private fields */ }
 impl<'f, V> Loader<'f, V> {
     pub fn new(formats: &'f Formats<V>) -> Self;
     pub fn merge(self, strategy: Merge) -> Self;
+    pub fn default_format(self, format: impl Into<String>) -> Self;
     pub fn max_source_bytes(self, limit: usize) -> Self;
     pub fn max_total_bytes(self, limit: usize) -> Self;
     pub fn max_depth(self, limit: usize) -> Self;
@@ -184,8 +195,9 @@ Serde-derived Rust structs. It is not a built-in format registry.
   fidelity are controlled by the consumer's value model and codecs.
 - `MergeValues::validate` defaults to no-op; callers must enforce depth for
   their own recursive values, and bound recursion inside parsers themselves.
-- `.cfg` is a filename convention; without a registered fallback or header it
-  reports `NoDefaultFormat`. Unknown names never trigger parser guessing.
+- `.cfg` is auto-registered for detection; it uses the loader default if no
+  marker matches. Without any configured default, it reports `NoDefaultFormat`.
+  Other extensions require registration. Unknown names never trigger guessing.
 - No includes, command evaluation, environment substitution, URL resolution,
   global state, or asynchronous runtime. No implied filesystem access.
 

@@ -9,13 +9,16 @@ selection and source bookkeeping. The consumer owns data interpretation.
 - **Source:** borrowed bytes, UTF-8 text, a one-shot reader or a local path.
 - **Format:** `Formats<V>` maps registered names and extensions to `Codec<V>`
   implementors; `Callbacks` adapts closures.
-- **Detection:** explicit choice, registered extension, header/registered native
-  marker, then registered default. No speculative parsing or file access.
+- **Detection:** explicit choice, fixed extension, or automatic extension
+  selection (registered headers/markers before its default), then loader or
+  registry fallback. The `.cfg` extension is auto-registered with an unpinned
+  fallback that inherits the loader default. No speculative parsing or I/O.
 - **Value:** the decoder returns any caller-defined `V` directly, without
   converting through a generic JSON-compatible representation.
 - **Merge:** the `MergeValues<V>` adapter receives the strategy and depth budget;
   it determines what maps, lists, scalar/opaque values and deletion mean.
-- **Typed output:** the caller's `load_as` closure converts `V` into any `T`.
+- **Typed output:** Serde conversion to a target type or a custom `load_as`
+  callback; no format crate is required by the library.
 - **Paths:** the same user/system configuration directories as the Python
   project, using the operating system's conventions, without opening files.
 

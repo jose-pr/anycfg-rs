@@ -20,6 +20,14 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Automatic format selection registered per extension; `.cfg` is enabled by
+  default and inherits the loader's default format when no header matches.
+- `Formats::register_auto` to pin an extension-specific default and
+  `Formats::register_extension` to configure fixed formats.
+- `Loader::default_format` and `Options::default_format` for unnamed streams,
+  byte slices, and automatically detected extensions without a pinned default.
+- General-purpose `to_auto_vec`/`to_auto_vec_typed` writers for registered
+  auto-detect extensions.
 - `user_config_path`, `system_config_path` and `default_configs` using standard
   platform directories. `default_configs` yields system then user paths, with
   missing files represented by `None`.

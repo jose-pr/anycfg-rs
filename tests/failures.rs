@@ -403,7 +403,7 @@ fn a_layered_typed_load_hides_values_too() {
 }
 
 #[test]
-fn a_codecs_position_and_message_reach_the_parse_error_with_the_format_lines_line_counted() {
+fn a_codecs_position_and_message_reach_the_parse_error() {
     let mut registry = Formats::<String>::new();
     registry
         .register(

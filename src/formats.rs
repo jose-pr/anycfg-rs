@@ -88,17 +88,18 @@ impl<'a> Options<'a> {
     }
 }
 
-/// A registered format selection and its unmodified or header-stripped bytes.
+/// A registered format selection and the bytes its codec is given.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Detection<'a> {
     /// Canonical registered format name.
     pub format: &'a str,
-    /// Input without any UTF-8 BOM or selected shebang.
+    /// Input without its byte-order mark or format line.
     pub payload: &'a [u8],
+    /// Lines removed from the start of the input: 1 after a format line, else 0.
+    pub lines_removed: usize,
 }
 
-const SHEBANG_MAX_BYTES: usize = 256;
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Clone)]
@@ -111,6 +112,7 @@ enum ExtensionMode {
 ///
 /// The .cfg extension starts in auto-detect mode with its default supplied
 /// by each loader. All other extensions and codecs are registered by callers.
+/// A format answers to its name and to each extension that is fixed to it.
 pub struct Formats<V> {
     codecs: BTreeMap<String, Box<dyn Codec<V> + Send + Sync>>,
     suffixes: BTreeMap<String, ExtensionMode>,
@@ -268,12 +270,16 @@ impl<V> Formats<V> {
         Ok(extensions)
     }
 
+    /// The format a name answers to, ignoring case and leading dots.
     fn canonical(&self, name: &str) -> Result<&str, Error> {
-        let name = name.trim_start_matches('.');
-        self.codecs
-            .get_key_value(&name.to_ascii_lowercase())
-            .map(|(key, _)| key.as_str())
-            .ok_or_else(|| self.unsupported_format())
+        let name = name.trim_start_matches('.').to_ascii_lowercase();
+        if let Some((format, _)) = self.codecs.get_key_value(&name) {
+            return Ok(format);
+        }
+        match self.suffixes.get(&name) {
+            Some(ExtensionMode::Fixed(format)) => Ok(format),
+            _ => Err(self.unsupported_format()),
+        }
     }
 
     fn unsupported_format(&self) -> Error {
@@ -282,16 +288,25 @@ impl<V> Formats<V> {
         }
     }
 
-    /// Select the registered codec without speculative parsing.
+    /// Select the registered codec. Nothing is guessed from the content.
     ///
-    /// Explicit formats and fixed extensions bypass detection. Auto-detect
-    /// extensions honor registered headers/markers before their default.
-    /// The pre-registered .cfg extension inherits the per-call default.
-    /// Unnamed sources use that same default or the registry fallback.
+    /// One leading UTF-8 byte-order mark is dropped. Then an explicit format
+    /// wins, then an extension fixed to a format. Otherwise, for an auto-detect
+    /// extension or an unnamed input:
+    ///
+    /// 1. A first line starting `#!` names the format by its last word, after
+    ///    any `/` or `\` (so `#!/usr/bin/env yaml` names `yaml`), ignoring case
+    ///    and leading dots. The line is not part of what the codec is given.
+    /// 2. A document starting with a registered marker is that marker's format.
+    /// 3. The extension's own default, then [`Options::default_format`] (which
+    ///    a [`Loader`](crate::Loader) sets), then [`Formats::set_default`].
     ///
     /// # Errors
     ///
-    /// Rejects unknown extensions, invalid directives and oversized input.
+    /// [`Error::TooLarge`] for oversized input, [`Error::UnsupportedExtension`]
+    /// for an unknown extension, [`Error::UnsupportedFormat`] listing the
+    /// registered formats for a name no format answers to, and
+    /// [`Error::NoDefaultFormat`] when nothing selects one.
     pub fn detect<'a>(
         &'a self,
         input: &'a [u8],
@@ -307,6 +322,7 @@ impl<V> Formats<V> {
             return Ok(Detection {
                 format: self.canonical(name)?,
                 payload,
+                lines_removed: 0,
             });
         }
         let mode = options
@@ -321,39 +337,26 @@ impl<V> Formats<V> {
                     })
             })
             .transpose()?;
-        if let Some(ExtensionMode::Fixed(name)) = mode {
+        if let Some(ExtensionMode::Fixed(format)) = mode {
             return Ok(Detection {
-                format: name,
+                format,
                 payload,
+                lines_removed: 0,
             });
         }
-        if payload.starts_with(b"#!") {
-            let end = payload
-                .iter()
-                .position(|b| *b == b'\n')
-                .unwrap_or(payload.len());
-            if end > SHEBANG_MAX_BYTES {
-                return Err(self.unsupported_format());
-            }
-            let line =
-                core::str::from_utf8(&payload[2..end]).map_err(|_| self.unsupported_format())?;
-            let requested = line
-                .split_ascii_whitespace()
-                .last()
-                .ok_or_else(|| self.unsupported_format())?;
-            let requested = requested
-                .rsplit(['/', '\\'])
-                .next()
-                .ok_or_else(|| self.unsupported_format())?;
-            let format = self.canonical(requested)?;
-            let tail = if end < payload.len() {
-                &payload[end + 1..]
-            } else {
-                &payload[end..]
+        if let Some(rest) = payload.strip_prefix(b"#!") {
+            let (line, tail) = match rest.iter().position(|byte| *byte == b'\n') {
+                Some(end) => (&rest[..end], &rest[end + 1..]),
+                None => (rest, &rest[rest.len()..]),
+            };
+            let format = match named_by_format_line(line) {
+                Some(name) => self.canonical(name)?,
+                None => return Err(self.unsupported_format()),
             };
             return Ok(Detection {
                 format,
                 payload: tail,
+                lines_removed: 1,
             });
         }
         if let Some((_, name)) = self
@@ -364,17 +367,19 @@ impl<V> Formats<V> {
             return Ok(Detection {
                 format: name,
                 payload,
+                lines_removed: 0,
             });
         }
-        let format = match mode {
-            Some(ExtensionMode::Auto(Some(default))) => default.as_str(),
-            Some(ExtensionMode::Auto(None)) | None => match options.default_format {
-                Some(name) => self.canonical(name)?,
-                None => self.fallback.as_deref().ok_or(Error::NoDefaultFormat)?,
-            },
-            Some(ExtensionMode::Fixed(_)) => unreachable!("fixed extension already returned"),
+        let format = match (mode, options.default_format) {
+            (Some(ExtensionMode::Auto(Some(pinned)) | ExtensionMode::Fixed(pinned)), _) => pinned,
+            (_, Some(name)) => self.canonical(name)?,
+            (_, None) => self.fallback.as_deref().ok_or(Error::NoDefaultFormat)?,
         };
-        Ok(Detection { format, payload })
+        Ok(Detection {
+            format,
+            payload,
+            lines_removed: 0,
+        })
     }
 
     /// Decode bytes with the selected registered codec.
@@ -390,7 +395,7 @@ impl<V> Formats<V> {
             .ok_or_else(|| self.unsupported_format())?;
         codec.decode(selected.payload).map_err(|e| Error::Parse {
             format: selected.format.to_owned(),
-            line: e.line,
+            line: e.line.map(|line| line + selected.lines_removed),
             column: e.column,
             message: e.message,
         })
@@ -593,6 +598,15 @@ where
     })
 }
 
+/// The word a format line (without its `#!`) ends with, after any path.
+fn named_by_format_line(line: &[u8]) -> Option<&str> {
+    let word = core::str::from_utf8(line)
+        .ok()?
+        .split_ascii_whitespace()
+        .next_back()?;
+    word.rsplit(['/', '\\']).next()
+}
+
 fn normalize(input: &str) -> Result<String, Error> {
     let name = input.to_ascii_lowercase();
     if name.is_empty()
@@ -607,11 +621,9 @@ fn normalize(input: &str) -> Result<String, Error> {
 
 fn extension(name: &str) -> Option<String> {
     let final_component = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    final_component.rsplit_once('.').and_then(|(_, ext)| {
-        if ext.is_empty() {
-            None
-        } else {
-            Some(ext.to_ascii_lowercase())
-        }
-    })
+    // As `Path::extension`: a name's leading dot does not start an extension.
+    final_component
+        .rsplit_once('.')
+        .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
+        .map(|(_, ext)| ext.to_ascii_lowercase())
 }

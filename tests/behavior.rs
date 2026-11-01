@@ -56,7 +56,7 @@ fn anonymous_sources_use_the_registered_fallback_without_sniffing() {
 }
 
 #[test]
-fn extensions_and_shebangs_choose_only_registered_codecs() {
+fn extensions_and_format_lines_choose_only_registered_codecs() {
     let registry = formats();
     let custom = registry
         .from_slice(b"port:80\n", Options::new().name("app.co"))
@@ -85,7 +85,7 @@ fn extensions_and_shebangs_choose_only_registered_codecs() {
 }
 
 #[test]
-fn explicit_format_does_not_remove_a_shebang() {
+fn explicit_format_does_not_remove_a_format_line() {
     let registry = formats();
     assert!(matches!(
         registry.from_slice(b"#!colon\nport:80\n", Options::new().format("colon")),

@@ -9,6 +9,10 @@ use core::error::Error as StdError;
 use anycfg::Error;
 
 /// All an error shows: its message, its `Debug`, and each cause in its source chain.
+#[allow(
+    dead_code,
+    reason = "not every test binary inspects an error this closely"
+)]
 pub fn everything_shown(error: &Error) -> String {
     let mut shown = format!("{error}\n{error:?}\n");
     let mut source = StdError::source(error);

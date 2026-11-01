@@ -13,8 +13,8 @@ For a compact, checked-in contract covering public names, defaults and caveats, 
 | `Formats<V>` | Named codec registry with fixed and auto-detect extension rules |
 | `Codec<V>` | Format-specific `decode` and `encode` implementations |
 | `Callbacks<V, D, E>` | Wrap decoder and encoder functions or closures |
-| `CodecError` | Sanitized location information for codec failures |
-| `Options<'a>` | Explicit format, logical name, default format and byte budget |
+| `CodecError` | A codec's failure: a position and a message with no document text |
+| `Options<'a>` | Explicit format, logical name, default format, byte budget and depth |
 | `Detection<'a>` | Selected format and bytes to pass to the codec |
 | `Formats::register` | Register a codec and its fixed extensions |
 | `Formats::register_auto` | Register an auto-detect extension with a default |
@@ -28,7 +28,8 @@ For a compact, checked-in contract covering public names, defaults and caveats, 
 | Public API | Purpose |
 | --- | --- |
 | `Formats::from_slice` / `from_str` / `from_reader` | Decode documents into `V` |
-| `Formats::from_slice_typed` / `from_str_typed` / `from_reader_typed` | Decode `V` into `T: DeserializeOwned` |
+| `Formats::load` | Read a file and decode it into `V` |
+| `Formats::from_slice_typed` / `from_str_typed` / `from_reader_typed` / `load_typed` | Decode `V` into `T: DeserializeOwned`, naming a refused key |
 | `Formats::to_vec` / `to_string` / `to_writer` | Serialize a `V` via a registered codec |
 | `Formats::to_vec_typed` | Serialize a typed `T` through a caller-supplied Serde serializer |
 | `Formats::to_auto_vec` / `to_auto_vec_typed` | Write a self-describing document for an automatic extension |
@@ -55,10 +56,11 @@ For a compact, checked-in contract covering public names, defaults and caveats, 
 | `user_config_path` | Resolve a standard user location |
 | `system_config_path` | Resolve the machine-wide location |
 | `default_configs` | Existing system and user files, in override order |
+| `Search` | The one file to read: explicit path, named variable, user's, system's |
 
 ## Error model
 
-`Error` is a non-exhaustive enum covering input selection, invalid registration, I/O, byte budgets, parser failures, conversion failures, merge rejection, and unavailable/missing configuration paths. For exact variants, see the generated [`anycfg::Error`](https://jose-pr.github.io/anycfg-rs/rust/anycfg/enum.Error.html) reference.
+`Error` is a non-exhaustive enum covering input selection, invalid registration, I/O, byte budgets, parser failures, conversion failures, merge rejection, and unavailable/missing configuration paths. No message quotes a value from a document; `Error::Parse` and `Error::Conversion` carry a message saying what was wrong. For exact variants, see the generated [`anycfg::Error`](https://jose-pr.github.io/anycfg-rs/rust/anycfg/enum.Error.html) reference.
 
 ## Development reference build
 

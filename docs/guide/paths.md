@@ -1,6 +1,6 @@
 # Configuration locations
 
-`anycfg` exposes platform-standard **system** and **user** configuration locations, modeled on the Python library. The path functions don't create directories or write files.
+`anycfg` exposes platform-standard **system** and **user** configuration locations. The path functions don't create directories or write files.
 
 ## Platform directories
 
@@ -11,6 +11,30 @@
 | macOS | `/etc` | absolute `$XDG_CONFIG_HOME` or `~/.config` |
 
 Relative `XDG_CONFIG_HOME` values are ignored. The system directory does not use `XDG_CONFIG_DIRS`.
+
+## Find the one file to read
+
+`Search` returns the first that exists of an explicit path, the path a named environment variable holds, the user's file and the system's file:
+
+~~~rust
+use anycfg::{Formats, Options, Search};
+use serde_json::Value;
+use std::path::Path;
+
+# fn example(formats: &Formats<Value>, flag: Option<&Path>) -> Result<(), anycfg::Error> {
+let found = Search::new("myapp/settings.cfg")
+    .explicit(flag)
+    .variable("MYAPP_CONFIG")
+    .find()?;
+if let Some(path) = found {
+    let value = formats.load(path, Options::new())?;
+    # let _ = value;
+}
+# Ok(())
+# }
+~~~
+
+An explicit path or the variable's path that is not a file is an error naming it, whatever else exists (`Error::NotFound`). A variable set but empty counts as unset. No file anywhere is `Ok(None)`. The working directory is never searched; a relative path a person named is taken against it because they chose it. The caller names the variable, and the crate reads no variable of its own.
 
 ## Discover directories and files
 

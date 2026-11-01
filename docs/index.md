@@ -2,16 +2,17 @@
 
 **A format-neutral configuration library for Rust, with Serde, pluggable formats and ordered source layering.**
 
-`anycfg` manages *where* configuration comes from, *which registered codec* reads it, and *how sources are combined*. Your application supplies the document representation and the format parsers. The only runtime dependency is **Serde**.
+`anycfg` manages *where* configuration comes from, *which registered codec* reads it, *how sources are combined*, and *what a failure says*: it names the key and never quotes a value. Your application supplies the document representation and the format parsers. It depends on `serde` and `serde_path_to_error`.
 
 ## Why anycfg?
 
 - **Bring your own formats.** Register codecs or callback functions. JSON, TOML and YAML are examples, not built-in dependencies.
-- **Automatic format selection.** Use registered file extensions and content markers. The `.cfg` extension is pre-registered for auto-detection and inherits your loader's default format unless overridden.
+- **Failures that say something.** A typed read names an unknown, missing or duplicate field and the path of a wrong type. Values and parser excerpts stay out of every message.
+- **Automatic format selection.** Use registered file extensions and content markers. A `.cfg` file can name its format on its first line (`#!json`, `#!/usr/bin/env yaml`); otherwise it uses your default. Nothing is guessed from content.
 - **Explicit defaults.** `Loader::new(&formats, "toml")` sets the fallback for unnamed byte streams and unpinned automatic extensions.
 - **Layer configuration.** Read bytes, text, streams and paths in order; a caller-owned `MergeValues<V>` policy decides what replacement, shallow and deep merging mean.
 - **Serde types.** Convert a parsed or merged value into a Serde-derived Rust struct, and serialize typed values through consumer-selected serializers.
-- **Standard locations.** Discover machine-wide and per-user configuration paths using the platform's conventions.
+- **Standard locations.** `Search` finds the one file to read: an explicit path, a named variable's path, the user's file, the system's. The working directory is never searched.
 
 ## Install
 

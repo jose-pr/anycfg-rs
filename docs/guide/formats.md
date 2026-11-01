@@ -40,7 +40,7 @@ impl Codec<String> for Plain {
 }
 ~~~
 
-Codec errors contain optional line and column numbers, but no raw parser excerpts. Keep any format-specific messages out of public error types if configuration may contain secrets.
+A `CodecError` holds an optional line, column and message. The message reaches `Error::Parse` as written, so it must hold no text from the document: pass on a parser's message only when that parser is known not to quote. `toml`'s and `serde-saphyr`'s `Display` print the source line, which is what must not reach an error. The [repository example](https://github.com/jose-pr/anycfg-rs/blob/main/examples/three_formats.rs) has a failure function for each of `toml`, `serde_json` and `serde-saphyr`; `CodecError::at_offset` turns a byte offset into a line and column.
 
 ## Format registration versus extension registration
 
@@ -60,7 +60,7 @@ formats.register_auto(["settings"], "plain")?;
 # }
 ~~~
 
-A fixed extension never interprets a format header. An automatic extension checks registered headers and markers, then uses its configured fallback.
+A fixed extension never interprets a format header. An automatic extension checks registered headers and markers, then uses its configured fallback. A format answers to its name and to each extension fixed to it, so a format registered with `.yml` also answers to `#!yml`.
 
 The initially registered `.cfg` extension is special *only in the registry setup*: it starts in automatic mode, with no pinned fallback. It inherits the loader's explicit default unless an application overrides that extension.
 
@@ -68,6 +68,6 @@ The initially registered `.cfg` extension is special *only in the registry setup
 
 A codec may return a Serde-compatible dynamic tree, a domain-specific structure, or an opaque value. If several registered codecs feed the same loader, their outputs must all use the registry's `V`.
 
-For examples of TOML, YAML and JSON codecs, see [Serde and typed configuration](serde.md) and the [repository example](https://github.com/jose-pr/anycfg-rs/blob/main/examples/serde_formats.rs).
+For examples of TOML, YAML and JSON codecs, see [Serde and typed configuration](serde.md) and the [repository example](https://github.com/jose-pr/anycfg-rs/blob/main/examples/three_formats.rs).
 
 For precedence and output headers, see [Automatic format selection](automatic-selection.md).

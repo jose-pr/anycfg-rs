@@ -1,243 +1,219 @@
 # anycfg
 
-[![Version](https://img.shields.io/badge/version-0.1.0--alpha.0-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/CHANGELOG.md)
-[![Rust version](https://img.shields.io/badge/rust-1.89%2B-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/Cargo.toml)
-[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://jose-pr.github.io/anycfg-rs/)
-[![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/anycfg-rs/test.yaml)](https://github.com/jose-pr/anycfg-rs/actions/workflows/test.yaml)
+[![Version](https://img.shields.io/crates/v/anycfg.svg)](https://crates.io/crates/anycfg)
+[![Rust version](https://img.shields.io/crates/msrv/anycfg.svg)](https://crates.io/crates/anycfg)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](https://github.com/jose-pr/anycfg-rs/blob/main/LICENSE)
+[![Docs](https://img.shields.io/docsrs/anycfg)](https://docs.rs/anycfg)
+[![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/anycfg-rs/test.yml)](https://github.com/jose-pr/anycfg-rs/actions/workflows/test.yml)
 
-**Configuration discovery, format dispatch, and ordered layering without choosing a parser or value model.**
-`anycfg` supplies standard user/system configuration paths, bounded byte and stream
-reading, automatic format selection, and a loader. Applications register their own
-codecs, define value merge semantics, and decide how results become typed data.
-The only runtime dependency is **Serde**; there are no built-in document formats.
+**Find a configuration file, read it in the format it names, and refuse it in words that name the
+key and never quote a value.** `anycfg` has no format of its own: an application registers its
+parsers, chooses its value type and decides how layers merge. See the
+[documentation](https://jose-pr.github.io/anycfg-rs/).
 
-**[Documentation site](https://jose-pr.github.io/anycfg-rs/):** Getting started, format registration, automatic selection, sources, Serde, merging, standard paths and generated Rust API reference.
+> **Status:** not published. `0.1.0-alpha.0` is a pre-release; the API may change in any release
+> before 1.0, and the crate is taken from its repository until then.
 
 ## Features
 
-- **Pluggable formats** — a `Codec<V>` implementation or `Callbacks::new(decode, encode)` registers a format name, filename extensions, and optional native markers.
-- **Application-owned values** — decoders return the application's `V`, with no intermediate JSON-like representation or built-in conversion rules.
-- **User-defined merging** — implement `MergeValues<V>` or pass a merge callback. `Merge::Deep`, `Shallow` and `Replace` are policy names passed to that adapter, not hard-coded map algorithms.
-- **Serde-typed values** — `Formats::from_slice_typed`, `Loader::load_typed`, and `Formats::to_vec_typed` work with `DeserializeOwned`/`Serialize` types through an application-chosen Serde value model. `load_as` remains available for custom conversion.
-- **Standard locations** — `user_config_path`, `system_config_path`, and `default_configs` provide platform defaults and system-before-user layering.
-- **Automatic format selection** — applications can register fixed extensions or auto-detect extensions with their own fallback. `.cfg` is registered for auto-detection by default, inheriting the loader's default format. Explicit choices take precedence; no speculative parsing or command execution.
-- **Resource limits** — bounded per-source and combined byte input; the value adapter validates its own nesting rules.
+- **Failures that say something, with no document content.** A typed read names the refused key:
+  unknown, missing and duplicate fields by name, a wrong type by the key's path, and what was
+  expected. Values are never quoted, and neither is a parser's excerpt of the source.
+- **Formats you register.** A `Codec<V>` or two closures gives a format a name, extensions and,
+  if it has one, a marker such as `%YAML`. `V` is your value type; nothing goes through a tree of
+  this crate's.
+- **`.cfg` files that name their format.** `#!json`, `#!/usr/bin/env yaml` or a registered marker
+  on the first line select the format; anything else is the default. Nothing is guessed from
+  content, and a name no format answers to is an error listing the registered formats. One leading
+  byte-order mark is ignored.
+- **A search for the one file to read.** An explicit path, then a named environment variable's
+  path, each an error if the file is not there; then the user's file and the system's. None found
+  is `Ok(None)`. The working directory is never searched.
+- **Layers.** A `Loader` reads bytes, text, streams and paths in order and hands them to your merge
+  policy.
+- **Limits you set.** Bytes per source, bytes in total and nesting each have a default and no floor.
+- **Nothing runs.** No includes, interpolation, commands or URLs, and no process-wide state.
 
 ## Installation
 
-This repository is not yet published to a registry:
-
-```toml
-[dependencies]
-anycfg = { git = "https://github.com/jose-pr/anycfg-rs" }
-serde = { version = "1", features = ["derive"] }
-
-# Only add the format backends your application uses:
-serde_json = "1"
-toml = "0.9"
-serde-saphyr = "2"
+```bash
+cargo add anycfg --git https://github.com/jose-pr/anycfg-rs
 ```
 
-| Cargo feature | Adds | Default |
-| --- | --- | --- |
-| None | Serde is mandatory; JSON, TOML and YAML remain application-selected | Yes |
+The crate has no Cargo features. Rust 1.89 or later. It depends on `serde` and
+`serde_path_to_error`; your application adds the parsers it registers.
 
 ## Quick start
 
-Register a text codec and load two layers. The same mechanism works with an
-application-defined structured value, parser, and merge adapter.
+Register a format, read a typed value, and see what a refusal says:
+
+```rust
+use anycfg::{Callbacks, CodecError, Formats, Options};
+use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Server {
+    host: String,
+    port: u16,
+}
+
+let mut formats = Formats::<Value>::new();
+formats.register(
+    "json",
+    ["json"],
+    Callbacks::new(
+        |bytes: &[u8]| {
+            serde_json::from_slice(bytes).map_err(|error| {
+                CodecError::new().line(error.line()).column(error.column())
+            })
+        },
+        |value: &Value| serde_json::to_vec(value).map_err(|_| CodecError::new()),
+    ),
+)?;
+
+let json = Options::new().name("app.json");
+let server: Server = formats.from_str_typed(r#"{"host":"localhost","port":8080}"#, json)?;
+assert_eq!(server.host, "localhost");
+assert_eq!(server.port, 8080);
+
+let refused = formats
+    .from_str_typed::<Server>(r#"{"host":"localhost","port":"hunter2"}"#, json)
+    .unwrap_err();
+assert_eq!(
+    refused.to_string(),
+    "invalid configuration at `port`: expected u16, found a string"
+);
+# Ok::<(), anycfg::Error>(())
+```
+
+Find the file a program should read, then read it:
+
+```rust,no_run
+use anycfg::{Formats, Options, Search};
+use serde::Deserialize;
+use serde_json::Value;
+use std::path::Path;
+
+#[derive(Deserialize)]
+struct Settings {}
+
+fn read(formats: &Formats<Value>, flag: Option<&Path>) -> Result<Option<Settings>, anycfg::Error> {
+    let found = Search::new("app/app.cfg")
+        .explicit(flag)
+        .variable("APP_CONFIG")
+        .find()?;
+    found
+        .map(|path| formats.load_typed(path, Options::new()))
+        .transpose()
+}
+```
+
+Layer several sources, in any mix of formats, through your merge policy:
 
 ```rust
 use anycfg::{Callbacks, CodecError, Formats, Loader, Merge, ReplaceValues, Source};
 
 let mut formats = Formats::<String>::new();
-formats.register("plain", ["txt"], Callbacks::new(
-    |input: &[u8]| String::from_utf8(input.to_vec()).map_err(|_| CodecError::default()),
-    |value: &String| Ok(value.as_bytes().to_vec()),
-))?;
-formats.set_default("plain")?;
+formats.register(
+    "plain",
+    ["txt"],
+    Callbacks::new(
+        |input: &[u8]| String::from_utf8(input.to_vec()).map_err(|_| CodecError::new()),
+        |value: &String| Ok(value.as_bytes().to_vec()),
+    ),
+)?;
 
 let text = Loader::new(&formats, "plain")
     .merge(Merge::Replace)
     .load([Source::text("old"), Source::text("new")], &ReplaceValues)?;
 assert_eq!(text, "new");
-
 # Ok::<(), anycfg::Error>(())
 ```
 
-### Typed Serde configuration
-
-The crate depends on `serde` but not on any particular parser. Add the format
-implementations your application chooses. For instance, a JSON-only application
-can register `serde_json` as a codec and deserialize into an ordinary Rust struct:
-
-```rust
-use anycfg::{Callbacks, CodecError, Formats, Options};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-# fn main() -> Result<(), anycfg::Error> {
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
-struct Server { host: String, port: u16 }
-
-let mut formats = Formats::<Value>::new();
-formats.register("json", ["json"], Callbacks::new(
-    |bytes: &[u8]| serde_json::from_slice::<Value>(bytes)
-        .map_err(|_| CodecError::default()),
-    |value: &Value| serde_json::to_vec(value)
-        .map_err(|_| CodecError::default()),
-))?;
-formats.set_default("json")?;
-
-let config: Server = formats.from_slice_typed(
-    br#"{"host":"localhost","port":8080}"#,
-    Options::new().name("app.json"),
-)?;
-let encoded = formats.to_vec_typed(&config, "json", serde_json::value::Serializer)?;
-let decoded: Server = formats.from_slice_typed(&encoded, Options::new().format("json"))?;
-assert_eq!(config, decoded);
-# Ok(())
-# }
-```
-
-For **TOML, YAML and JSON in a single registry**, see the runnable
-[Serde formats example](https://github.com/jose-pr/anycfg-rs/blob/main/examples/serde_formats.rs).
-It registers all three backends, merges TOML defaults with YAML and JSON
-layers, and calls `Loader::load_typed` with a Serde-derived result type. Only the example and tests depend on `toml`, `serde-saphyr`, and
-`serde_json`; the library requires none of them. Its use of
-`serde_json::Value` is an example choice, not a core requirement. More
-specialized values can preserve different datetime, number and tag semantics.
-
-For a value model that is not a Serde deserializer, use
-`load_as(sources, adapter, |value| /* Result<T, E> */)` to convert the value.
-A Serde-aware value model must implement `serde::Deserializer` to use typed
-reads. For typed writes, the caller supplies a `serde::Serializer` producing
-that same value type; this avoids selecting a universal intermediate tree.
-
-Read system and user configuration paths (missing files become `None`):
-
-```rust
-use anycfg::{default_configs, Source};
-
-let paths = default_configs("myapp/config.cfg")?;
-let sources: Vec<_> = paths.iter()
-    .map(|path| path.as_deref().map(Source::path))
-    .collect();
-// Pass `sources` to Loader::load or Loader::load_or.
-assert!(sources.len() == 2);
-# Ok::<(), anycfg::Error>(())
-```
+[`examples/three_formats.rs`](https://github.com/jose-pr/anycfg-rs/blob/main/examples/three_formats.rs)
+registers TOML, JSON and YAML over one value type, with a failure function for each parser. Start
+there when you register a parser: `toml`'s and `serde-saphyr`'s `Display` print the source line.
 
 ## API overview
 
-| Module | Purpose |
+Everything is at the crate root; there are no public modules.
+
+| Item | Purpose |
 | --- | --- |
-| `anycfg::Formats<V>` | Runtime registry of codecs and fixed/automatic extension policies |
-| `anycfg::Codec<V>` | Consumer-owned parse and serialize operations |
-| Serde typed methods | Decode `V` into `DeserializeOwned` targets; serialize `Serialize` values via a caller-selected Serde serializer |
-| `anycfg::Callbacks<V, D, E>` | Adapter from parse/encode closures to `Codec<V>` |
-| `anycfg::Loader<V>` | Load ordered sources, select a default format, apply budgets, merge and convert |
-| `anycfg::MergeValues<V>` | Consumer-owned merge and nesting validation |
-| `anycfg::Source` | Input as bytes, text, reader or path plus format hints |
-| Standard path functions | Discover system and per-user configuration paths |
+| `Formats<V>` | The registry: register formats, select one, read and write |
+| `Codec<V>`, `Callbacks` | A format's decode and encode, as a trait or as two closures |
+| `CodecError` | A codec's failure: a position and a message with no document text |
+| `Options`, `Detection` | Hints and limits for one read; what selection chose |
+| `Loader`, `Source` | Ordered sources, limits, and the merged or typed result |
+| `MergeValues`, `Merge`, `ReplaceValues` | Your merge policy, and the strategy it is given |
+| `Search` | The one file a program reads |
+| `user_config_path`, `system_config_path`, `default_configs` | The platform's configuration directories |
+| `Error` | Every failure |
 
-### Path conventions
+## Choosing a format
 
-| Platform | System base | User base |
-| --- | --- | --- |
-| Windows | `%PROGRAMDATA%` or `C:\\ProgramData` | `%APPDATA%` or `~/AppData/Roaming` |
-| Linux / Unix | `/etc` | absolute `$XDG_CONFIG_HOME` or `~/.config` |
-| macOS | `/etc` | absolute `$XDG_CONFIG_HOME` or `~/.config` |
+For one input, the first of these that applies:
 
-`default_configs("app.cfg")` yields `[system, user]`, retaining `None` for
-missing or non-file paths. It accepts nested relative filenames and rejects
-absolute paths and `..` traversal. It does not create directories. A loader
-can receive the resulting optional sources directly; `load_or` returns the
-consumer-provided value when all sources are absent.
+1. A format the caller names (`Options::format`, `Source::format`).
+2. An extension fixed to a format (`register`, `register_extension`). The first line is not read.
+3. The first line, for an auto-detect extension (`.cfg` is one from the start; `register_auto`
+   makes others) or an unnamed input. `#!` names the format by the line's last word, after any `/`
+   or `\`, ignoring case and leading dots: `#!json`, `#!/usr/bin/env yaml`, `#!.TOML`. A format
+   answers to its name and to each extension fixed to it, so a format registered with `.yml`
+   answers to `#!yml`. The line is not part of what the codec is given, and a parse error's line
+   number still counts it.
+4. A registered marker, such as `%YAML`, which stays in what the codec is given.
+5. The extension's own default (`register_auto`), then the loader's or `Options::default_format`,
+   then `Formats::set_default`.
 
-### Automatic format selection
+Nothing is guessed from the content. A first line no format answers to is
+`Error::UnsupportedFormat`, which lists the registered formats and does not repeat the line. An
+extension that is not registered is `Error::UnsupportedExtension`, which lists those registered.
 
-Formats are registered by callers; no parser is built into the crate.
-By default, .cfg is an auto-detect extension. Without a recognized directive
-or marker, it inherits the default specified when the loader is constructed:
+## What a failure says
 
-```rust
-# use anycfg::{Formats, Loader};
-// After registering the selected format codecs:
-# fn sample<V>(formats: &Formats<V>) {
-let loader = Loader::new(formats, "toml");
-# let _ = loader;
-# }
-```
+| Failure | `Display` |
+| --- | --- |
+| Unknown field | ``invalid configuration at `server.colour`: unknown field `colour`, expected one of `host`, `port` `` |
+| Missing field | ``invalid configuration at `server`: missing field `port` `` |
+| Duplicate field | ``invalid configuration at `server`: duplicate field `port` `` |
+| Wrong type | ``invalid configuration at `server.port`: expected u16, found a string`` |
+| Value out of range | ``invalid configuration at `server.port`: invalid value, expected u16, found an integer`` |
+| Unknown enum variant | ``invalid configuration at `level`: unknown variant, expected one of `info`, `warn` `` |
+| A type's own refusal (`custom`) | ``invalid configuration at `token`: refused by its type`` |
+| Malformed document | ``could not parse toml configuration at line 3, column 12: string values must be quoted, expected literal string`` |
+| In a file | ``/etc/app/app.cfg: invalid configuration at `server.port`: expected u16, found a string`` |
+| Named file missing | ``no configuration file at /x/app.cfg, which APP_CONFIG names`` |
+| First line names nothing | ``no configuration format answers to that name (registered: json, toml, yaml)`` |
 
-A loader requires an explicit default in its constructor and does not infer
-one from the registry. This default applies to unnamed byte slices and streams.
-For direct reads, use `Options::new().default_format("toml")`.
-The format name must refer to a registered codec.
-
-Extension rules can be configured independently:
-
-```rust
-# use anycfg::{Formats, Error};
-# fn configure<V>(formats: &mut Formats<V>) -> Result<(), Error> {
-formats.register_auto(["conf", "settings"], "toml")?;
-formats.register_auto(["cfg"], "yaml")?;      // Override the default for .cfg
-formats.register_extension("cfg", "json")?;   // Or make .cfg a fixed JSON extension
-# Ok(())
-# }
-```
-
-Auto-detect extensions check registered `#!format` directives and
-`register_marker` prefixes before using their default. Fixed extensions
-select their codec without inspecting headers. Native markers are left intact
-for the owning codec; selected `#!` directives are stripped. Explicit
-`Source::format` / `Options::format` overrides both kinds of extension.
-
-For self-describing output use `Formats::to_auto_vec` or
-`Formats::to_auto_vec_typed`, naming the auto-detect extension. The writer
-adds a header if the selected codec differs from a pinned extension default;
-for unpinned defaults it always adds a header so the output is portable.
-
-Precedence: explicit format > fixed extension > auto-detect directive or
-marker > pinned extension default > loader/per-call default > registry fallback.
-An unknown extension is rejected rather than guessed.
-
-### Value contract
-
-No assumptions are made about the value's representation. For applications
-which need deep merging, the `MergeValues<V>` implementation should walk its
-own structural model and enforce `max_depth`. The default `validate` method
-is intentionally a no-op; a caller that handles recursive untrusted values
-must implement it. Callback mergers can choose alternative semantics. A parser
-is responsible for its own input recursion and expansion limits.
-
-### Security
-
-Sources are never interpreted as code, commands, URLs, includes, or environment
-substitutions by this crate. A registered codec is explicitly trusted to parse
-and serialize its format. The core never includes input excerpts or caller
-conversion errors in its diagnostic messages; codecs supply only optional
-line and column numbers. A reader may consume one byte past the permitted
-limit to recognize overflow.
+A typed read does not show its value type's own errors, which quote the value, or any `custom`
+message, which may hold anything. A key is the one document text an error repeats, because a
+refused key must be named. A codec's message reaches the error as written, so a codec passes on
+only what its parser is known not to quote from the document.
 
 ## Development
-
-Rust 1.89 or later:
 
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --no-default-features -- -D warnings
 cargo test --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+cargo +nightly-2026-09-21 public-api --all-features -sss --color never | diff -u tools/public-api.txt -
 cargo package --list --allow-dirty
 ```
 
-The packaged `AGENTS.md` describes the exported API. CI is available from
-workflow dispatch or a temporary `ci-*` tag; no release tag is created by
-normal development.
+`tools/public-api.txt` is the committed public API, regenerated in the commit that changes it.
+[`AGENTS.md`](https://github.com/jose-pr/anycfg-rs/blob/main/AGENTS.md) is the API header that ships
+in the package. CI runs on demand: by workflow dispatch, or on a throwaway `ci-*` tag.
 
 ### Releasing
 
-Releases require an explicit license decision and passing Rust checks. The
-manifest currently specifies `publish = false`. No release tag or registry
-publication is configured.
+A `v*` tag runs the tests and a strict docs build, then creates a source release from the tag's
+`CHANGELOG.md` section. The manifest says `publish = false`, so nothing reaches crates.io.
+
+## License
+
+[MPL-2.0](https://github.com/jose-pr/anycfg-rs/blob/main/LICENSE).

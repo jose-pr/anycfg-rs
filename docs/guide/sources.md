@@ -11,6 +11,8 @@ Every load accepts ordered `Source` values. A source can borrow bytes or text, c
 | `Source::reader(Read)` | Any synchronous Rust reader | Reads with byte budget; consumes reader |
 | `Source::path(&Path)` | Filesystem path | Opens at load time; filename provides extension hint |
 
+To read one file directly, without a loader, use `Formats::load` or `Formats::load_typed`. A failure from any of these names the file (`Error::File`).
+
 ## Format hints
 
 A name is only a hint, not a file to open:
@@ -98,6 +100,6 @@ let loader = Loader::new(&formats, "text")
 # }
 ~~~
 
-A bounded reader may consume one extra byte to detect overflow. Parser recursion, expansion and custom source access remain the responsibility of the chosen codec.
+Each is a setting with a default and no floor. A bounded reader may consume one extra byte to detect overflow. Parser recursion, expansion and custom source access remain the responsibility of the chosen codec.
 
 See [Configuration locations](paths.md) and [Merging layers](merging.md).

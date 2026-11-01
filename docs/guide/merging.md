@@ -62,7 +62,7 @@ A callback adapter's default depth validation is a no-op. Use a custom `MergeVal
 
 ## Structural validation
 
-The loader passes a **64-level** default depth budget to the adapter. The adapter's `validate` method runs on each decoded document. Your implementation must enforce that limit for a recursive `V`; the library cannot inspect arbitrary user-defined representations.
+The loader passes a **64-level** default depth budget to the adapter, a setting with no floor. The adapter's `validate` method runs on each decoded document. Your implementation must enforce that limit for a recursive `V`; the library cannot inspect arbitrary user-defined representations. A typed load also enforces it on the merged value.
 
 The merge callback receives `max_depth` and should enforce it during recursion as well. Registered format parsers must have their own recursion and expansion bounds.
 
@@ -70,4 +70,4 @@ The merge callback receives `max_depth` and should enforce it during recursion a
 
 When `V` is a Serde deserializer, `Loader::load_typed` merges documents first and then deserializes the final result as your struct. For non-Serde representations, `load_as` accepts a conversion callback.
 
-For an example that defines `MergeValues<serde_json::Value>` and combines TOML, YAML and JSON, see [Serde integration](serde.md) or the [full example](https://github.com/jose-pr/anycfg-rs/blob/main/examples/serde_formats.rs).
+For an example that defines `MergeValues<serde_json::Value>` and combines TOML, YAML and JSON, see [Serde integration](serde.md) or the [full example](https://github.com/jose-pr/anycfg-rs/blob/main/examples/three_formats.rs).

@@ -10,7 +10,7 @@ anycfg = { git = "https://github.com/jose-pr/anycfg-rs" }
 serde = { version = "1", features = ["derive"] }
 ~~~
 
-To read JSON, TOML or YAML, add the corresponding format crates to your application's manifest. Only Serde is required by the library.
+To read JSON, TOML or YAML, add the corresponding format crates to your application's manifest. The library needs only `serde` and `serde_path_to_error`.
 
 ## Register a codec
 

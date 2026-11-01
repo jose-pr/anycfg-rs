@@ -95,20 +95,31 @@ impl fmt::Display for Error {
             Self::UnsupportedExtension => f.write_str("configuration extension not registered"),
             Self::InvalidRegistration => f.write_str("invalid or duplicate format registration"),
             Self::InvalidShebang => f.write_str("invalid configuration shebang"),
-            Self::InvalidUtf8 { offset } => write!(f, "configuration has invalid UTF-8 at byte {offset}"),
+            Self::InvalidUtf8 { offset } => {
+                write!(f, "configuration has invalid UTF-8 at byte {offset}")
+            }
             Self::TooLarge { limit } => write!(f, "configuration exceeds {limit} bytes"),
             Self::TooDeep { limit } => write!(f, "configuration exceeds {limit} value levels"),
             Self::NoSources => f.write_str("no configuration sources supplied"),
             Self::MergeShape => f.write_str("configuration values cannot be merged"),
             Self::Conversion => f.write_str("configuration value conversion failed"),
-            Self::Parse { format, line, column } => match (line, column) {
-                (Some(line), Some(column)) => write!(f, "could not parse {format} configuration at {line}:{column}"),
+            Self::Parse {
+                format,
+                line,
+                column,
+            } => match (line, column) {
+                (Some(line), Some(column)) => write!(
+                    f,
+                    "could not parse {format} configuration at {line}:{column}"
+                ),
                 _ => write!(f, "could not parse {format} configuration"),
             },
             Self::Serialize { format } => write!(f, "could not serialize {format} configuration"),
             Self::Source { index, cause } => write!(f, "configuration source {index}: {cause}"),
             Self::HomeUnavailable => f.write_str("could not locate the user home directory"),
-            Self::InvalidConfigName => f.write_str("configuration filename must be nonempty and relative"),
+            Self::InvalidConfigName => {
+                f.write_str("configuration filename must be nonempty and relative")
+            }
             Self::Io(err) => write!(f, "configuration I/O error: {err}"),
         }
     }

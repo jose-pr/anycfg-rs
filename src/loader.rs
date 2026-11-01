@@ -9,7 +9,9 @@ use std::path::Path;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 
-use crate::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, DEFAULT_MAX_TOTAL_BYTES, Error, Formats, Options};
+use crate::{
+    DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, DEFAULT_MAX_TOTAL_BYTES, Error, Formats, Options,
+};
 
 /// How later values affect accumulated configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -33,13 +35,21 @@ pub trait MergeValues<V> {
     /// Check an individual document against the caller's depth budget.
     ///
     /// The default is a no-op for flat or non-recursive value models.
-    fn validate(&self, _value: &V, _max_depth: usize) -> Result<(), Error> { Ok(()) }
+    fn validate(&self, _value: &V, _max_depth: usize) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Merge `next` into `previous` according to the selected strategy.
     ///
     /// Called only for the second and subsequent present sources. An adapter
     /// must handle `Merge::Replace`, or use [`ReplaceValues`] instead.
-    fn merge(&self, previous: &mut V, next: V, strategy: Merge, max_depth: usize) -> Result<(), Error>;
+    fn merge(
+        &self,
+        previous: &mut V,
+        next: V,
+        strategy: Merge,
+        max_depth: usize,
+    ) -> Result<(), Error>;
 }
 
 /// An adapter that replaces earlier values; no structural interpretation.
@@ -47,8 +57,16 @@ pub trait MergeValues<V> {
 pub struct ReplaceValues;
 
 impl<V> MergeValues<V> for ReplaceValues {
-    fn merge(&self, previous: &mut V, next: V, strategy: Merge, _max_depth: usize) -> Result<(), Error> {
-        if strategy != Merge::Replace { return Err(Error::MergeShape); }
+    fn merge(
+        &self,
+        previous: &mut V,
+        next: V,
+        strategy: Merge,
+        _max_depth: usize,
+    ) -> Result<(), Error> {
+        if strategy != Merge::Replace {
+            return Err(Error::MergeShape);
+        }
         *previous = next;
         Ok(())
     }
@@ -59,7 +77,13 @@ impl<V, F> MergeValues<V> for F
 where
     F: Fn(&mut V, V, Merge, usize) -> Result<(), Error>,
 {
-    fn merge(&self, previous: &mut V, next: V, strategy: Merge, max_depth: usize) -> Result<(), Error> {
+    fn merge(
+        &self,
+        previous: &mut V,
+        next: V,
+        strategy: Merge,
+        max_depth: usize,
+    ) -> Result<(), Error> {
         self(previous, next, strategy, max_depth)
     }
 }
@@ -90,32 +114,52 @@ impl<'a> Source<'a> {
     /// Borrow a byte slice without copying its content.
     #[must_use]
     pub fn bytes(bytes: &'a [u8]) -> Self {
-        Self { input: Input::Bytes(bytes), name: None, format: None }
+        Self {
+            input: Input::Bytes(bytes),
+            name: None,
+            format: None,
+        }
     }
 
     /// Borrow a UTF-8 string without copying its content.
     #[must_use]
-    pub fn text(text: &'a str) -> Self { Self::bytes(text.as_bytes()) }
+    pub fn text(text: &'a str) -> Self {
+        Self::bytes(text.as_bytes())
+    }
 
     /// Consume a synchronous reader while loading.
     #[must_use]
     pub fn reader(reader: impl Read + 'a) -> Self {
-        Self { input: Input::Reader(Box::new(reader)), name: None, format: None }
+        Self {
+            input: Input::Reader(Box::new(reader)),
+            name: None,
+            format: None,
+        }
     }
 
     /// Read a path only when loading, selecting a format from its extension.
     #[must_use]
     pub fn path(path: &'a Path) -> Self {
-        Self { input: Input::Path(path), name: None, format: None }
+        Self {
+            input: Input::Path(path),
+            name: None,
+            format: None,
+        }
     }
 
     /// Set a logical name used only for its extension.
     #[must_use]
-    pub fn name(mut self, name: &'a str) -> Self { self.name = Some(name); self }
+    pub fn name(mut self, name: &'a str) -> Self {
+        self.name = Some(name);
+        self
+    }
 
     /// Force a registered format by name, without removing a shebang.
     #[must_use]
-    pub fn format(mut self, format: &'a str) -> Self { self.format = Some(format); self }
+    pub fn format(mut self, format: &'a str) -> Self {
+        self.format = Some(format);
+        self
+    }
 }
 
 /// Load and combine registered-format documents as a consumer-owned value type.
@@ -139,15 +183,22 @@ impl<'f, V> Loader<'f, V> {
     /// extensions, and matching content directives take precedence.
     #[must_use]
     pub fn new(formats: &'f Formats<V>, default_format: impl Into<String>) -> Self {
-        Self { formats, strategy: Merge::Deep, default_format: default_format.into(),
+        Self {
+            formats,
+            strategy: Merge::Deep,
+            default_format: default_format.into(),
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
-            max_depth: DEFAULT_MAX_DEPTH }
+            max_depth: DEFAULT_MAX_DEPTH,
+        }
     }
 
     /// Select how the consumer's value adapter combines layers.
     #[must_use]
-    pub fn merge(mut self, strategy: Merge) -> Self { self.strategy = strategy; self }
+    pub fn merge(mut self, strategy: Merge) -> Self {
+        self.strategy = strategy;
+        self
+    }
 
     /// Set the fallback for unnamed streams and unpinned auto-detect extensions.
     /// Per-source format overrides and explicit extension defaults take priority.
@@ -159,15 +210,24 @@ impl<'f, V> Loader<'f, V> {
 
     /// Limit the total bytes of any single source.
     #[must_use]
-    pub fn max_source_bytes(mut self, max_bytes: usize) -> Self { self.max_source_bytes = max_bytes; self }
+    pub fn max_source_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_source_bytes = max_bytes;
+        self
+    }
 
     /// Limit the combined bytes of all present sources.
     #[must_use]
-    pub fn max_total_bytes(mut self, max_bytes: usize) -> Self { self.max_total_bytes = max_bytes; self }
+    pub fn max_total_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_total_bytes = max_bytes;
+        self
+    }
 
     /// Pass a maximum nesting depth to the caller's value adapter.
     #[must_use]
-    pub fn max_depth(mut self, max_depth: usize) -> Self { self.max_depth = max_depth; self }
+    pub fn max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
 
     /// Decode and merge sources in order; later sources win per the adapter.
     ///
@@ -187,13 +247,26 @@ impl<'f, V> Loader<'f, V> {
         let mut document: Option<V> = None;
         let mut bytes_total = 0usize;
         for (index, source) in sources.into_iter().enumerate() {
-            let Some(source) = source.into() else { continue; };
-            let next = self.read_source(source, &mut bytes_total)
-                .and_then(|value| { adapter.validate(&value, self.max_depth)?; Ok(value) })
-                .map_err(|cause| Error::Source { index, cause: Box::new(cause) })?;
+            let Some(source) = source.into() else {
+                continue;
+            };
+            let next = self
+                .read_source(source, &mut bytes_total)
+                .and_then(|value| {
+                    adapter.validate(&value, self.max_depth)?;
+                    Ok(value)
+                })
+                .map_err(|cause| Error::Source {
+                    index,
+                    cause: Box::new(cause),
+                })?;
             if let Some(previous) = document.as_mut() {
-                adapter.merge(previous, next, self.strategy, self.max_depth)
-                    .map_err(|cause| Error::Source { index, cause: Box::new(cause) })?;
+                adapter
+                    .merge(previous, next, self.strategy, self.max_depth)
+                    .map_err(|cause| Error::Source {
+                        index,
+                        cause: Box::new(cause),
+                    })?;
             } else {
                 document = Some(next);
             }
@@ -209,7 +282,12 @@ impl<'f, V> Loader<'f, V> {
     /// # Errors
     ///
     /// Returns [`Error::Conversion`] if the conversion callback fails.
-    pub fn load_as<'a, I, S, M, T, E, F>(&self, sources: I, adapter: &M, convert: F) -> Result<T, Error>
+    pub fn load_as<'a, I, S, M, T, E, F>(
+        &self,
+        sources: I,
+        adapter: &M,
+        convert: F,
+    ) -> Result<T, Error>
     where
         I: IntoIterator<Item = S>,
         S: Into<Option<Source<'a>>>,
@@ -268,20 +346,36 @@ impl<'f, V> Loader<'f, V> {
         };
         let remaining = self.max_total_bytes.saturating_sub(*bytes_total);
         let limit = self.max_source_bytes.min(remaining);
-        let exceeded_limit = if remaining < self.max_source_bytes { self.max_total_bytes } else { self.max_source_bytes };
+        let exceeded_limit = if remaining < self.max_source_bytes {
+            self.max_total_bytes
+        } else {
+            self.max_source_bytes
+        };
         let bytes = match source.input {
             Input::Bytes(bytes) => Cow::Borrowed(bytes),
-            Input::Reader(reader) => Cow::Owned(read_bounded(reader, limit).map_err(|e| translate_budget(e, exceeded_limit))?),
-            Input::Path(path) => Cow::Owned(read_bounded(File::open(path)?, limit).map_err(|e| translate_budget(e, exceeded_limit))?),
+            Input::Reader(reader) => Cow::Owned(
+                read_bounded(reader, limit).map_err(|e| translate_budget(e, exceeded_limit))?,
+            ),
+            Input::Path(path) => Cow::Owned(
+                read_bounded(File::open(path)?, limit)
+                    .map_err(|e| translate_budget(e, exceeded_limit))?,
+            ),
         };
         if bytes.len() > self.max_source_bytes {
-            return Err(Error::TooLarge { limit: self.max_source_bytes });
+            return Err(Error::TooLarge {
+                limit: self.max_source_bytes,
+            });
         }
         if bytes.len() > remaining {
-            return Err(Error::TooLarge { limit: self.max_total_bytes });
+            return Err(Error::TooLarge {
+                limit: self.max_total_bytes,
+            });
         }
-        *bytes_total = bytes_total.checked_add(bytes.len())
-            .ok_or(Error::TooLarge { limit: self.max_total_bytes })?;
+        *bytes_total = bytes_total
+            .checked_add(bytes.len())
+            .ok_or(Error::TooLarge {
+                limit: self.max_total_bytes,
+            })?;
         let opts = Options {
             format: source.format,
             name: name.as_deref(),
@@ -293,13 +387,21 @@ impl<'f, V> Loader<'f, V> {
 }
 
 fn translate_budget(error: Error, bound: usize) -> Error {
-    match error { Error::TooLarge { .. } => Error::TooLarge { limit: bound }, other => other }
+    match error {
+        Error::TooLarge { .. } => Error::TooLarge { limit: bound },
+        other => other,
+    }
 }
 
 fn read_bounded(mut source: impl Read, max_bytes: usize) -> Result<Vec<u8>, Error> {
     let mut buffer = Vec::new();
     let limit = u64::try_from(max_bytes).unwrap_or(u64::MAX - 1);
-    source.by_ref().take(limit.saturating_add(1)).read_to_end(&mut buffer)?;
-    if buffer.len() > max_bytes { return Err(Error::TooLarge { limit: max_bytes }); }
+    source
+        .by_ref()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut buffer)?;
+    if buffer.len() > max_bytes {
+        return Err(Error::TooLarge { limit: max_bytes });
+    }
     Ok(buffer)
 }

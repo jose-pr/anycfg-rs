@@ -12,7 +12,10 @@ fn home() -> Result<PathBuf, Error> {
 }
 
 fn append(base: PathBuf, name: Option<&Path>) -> PathBuf {
-    match name { Some(name) if !name.as_os_str().is_empty() => base.join(name), _ => base }
+    match name {
+        Some(name) if !name.as_os_str().is_empty() => base.join(name),
+        _ => base,
+    }
 }
 
 /// Return the current user's configuration directory or a path beneath it.
@@ -27,7 +30,8 @@ fn append(base: PathBuf, name: Option<&Path>) -> PathBuf {
 /// platform-specific fallback.
 pub fn user_config_path(name: Option<&Path>) -> Result<PathBuf, Error> {
     let base = if cfg!(windows) {
-        env::var_os("APPDATA").filter(|value| !value.is_empty())
+        env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .map(Ok)
             .unwrap_or_else(|| home().map(|dir| dir.join("AppData").join("Roaming")))?
@@ -48,7 +52,8 @@ pub fn user_config_path(name: Option<&Path>) -> Result<PathBuf, Error> {
 #[must_use]
 pub fn system_config_path(name: Option<&Path>) -> PathBuf {
     let base = if cfg!(windows) {
-        env::var_os("PROGRAMDATA").filter(|value| !value.is_empty())
+        env::var_os("PROGRAMDATA")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("C:\\ProgramData"))
     } else {
@@ -72,11 +77,18 @@ pub fn system_config_path(name: Option<&Path>) -> PathBuf {
 /// Rejects an invalid name or an unavailable home directory.
 pub fn default_configs(name: impl AsRef<Path>) -> Result<[Option<PathBuf>; 2], Error> {
     let name = name.as_ref();
-    if name.as_os_str().is_empty() || name.is_absolute() ||
-        name.components().any(|component| !matches!(component, Component::Normal(_))) {
+    if name.as_os_str().is_empty()
+        || name.is_absolute()
+        || name
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
         return Err(Error::InvalidConfigName);
     }
     let system = system_config_path(Some(name));
     let user = user_config_path(Some(name))?;
-    Ok([system.is_file().then_some(system), user.is_file().then_some(user)])
+    Ok([
+        system.is_file().then_some(system),
+        user.is_file().then_some(user),
+    ])
 }

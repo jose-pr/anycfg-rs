@@ -21,4 +21,4 @@ pub use codec::{Callbacks, Codec, CodecError};
 pub use error::Error;
 pub use formats::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, Detection, Formats, Options};
 pub use loader::{DEFAULT_MAX_TOTAL_BYTES, Loader, Merge, MergeValues, ReplaceValues, Source};
-pub use paths::{default_configs, system_config_path, user_config_path};
+pub use paths::{Search, default_configs, system_config_path, user_config_path};

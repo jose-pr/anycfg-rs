@@ -2,7 +2,9 @@
 
 use alloc::collections::BTreeMap;
 use core::fmt;
+use std::fs::File;
 use std::io::{Read, Write};
+use std::path::Path;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserializer, Serialize, Serializer};
@@ -472,6 +474,42 @@ impl<V> Formats<V> {
         convert::from_value(self.from_reader(input, options)?, options.max_depth)
     }
 
+    /// Read the file at `path`, bounded by [`Options::max_bytes`], and decode it.
+    ///
+    /// Its name selects the format unless `options` names one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::File`] naming the path, around the I/O, size, selection or parse error.
+    pub fn load(&self, path: impl AsRef<Path>, options: Options<'_>) -> Result<V, Error> {
+        let path = path.as_ref();
+        let name = path.to_string_lossy();
+        let options = Options {
+            name: options.name.or(Some(&name)),
+            ..options
+        };
+        File::open(path)
+            .map_err(Error::from)
+            .and_then(|file| self.from_reader(file, options))
+            .map_err(|cause| in_file(path, cause))
+    }
+
+    /// Read the file at `path` and deserialize its value into a Serde type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::File`] naming the path, around anything [`Formats::load`] or
+    /// [`Formats::from_slice_typed`] can return.
+    pub fn load_typed<T>(&self, path: impl AsRef<Path>, options: Options<'_>) -> Result<T, Error>
+    where
+        V: for<'de> Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        let path = path.as_ref();
+        let value = self.load(path, options)?;
+        convert::from_value(value, options.max_depth).map_err(|cause| in_file(path, cause))
+    }
+
     /// Serialize a value with a named registered codec.
     ///
     /// # Errors
@@ -583,6 +621,14 @@ impl<V> Formats<V> {
             .filter(|(_, mode)| matches!(mode, ExtensionMode::Auto(_)))
             .map(|(extension, _)| extension.clone())
             .collect()
+    }
+}
+
+/// `cause`, as a failure of the file at `path`.
+pub(crate) fn in_file(path: &Path, cause: Error) -> Error {
+    Error::File {
+        path: path.to_path_buf(),
+        cause: Box::new(cause),
     }
 }
 

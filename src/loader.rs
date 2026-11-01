@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use crate::codec::CodecError;
 use crate::convert;
 use crate::error::Error;
-use crate::formats::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, Formats, Options};
+use crate::formats::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, Formats, Options, in_file};
 
 /// Default maximum size of all documents combined (64 MiB).
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
@@ -356,6 +356,15 @@ impl<'f, V> Loader<'f, V> {
     }
 
     fn read_source(&self, source: Source<'_>, bytes_total: &mut usize) -> Result<V, Error> {
+        match source.input {
+            Input::Path(path) => self
+                .read_input(source, bytes_total)
+                .map_err(|cause| in_file(path, cause)),
+            _ => self.read_input(source, bytes_total),
+        }
+    }
+
+    fn read_input(&self, source: Source<'_>, bytes_total: &mut usize) -> Result<V, Error> {
         let name = match (&source.input, source.name) {
             (_, Some(name)) => Some(Cow::Borrowed(name)),
             (Input::Path(path), None) => Some(Cow::Owned(path.to_string_lossy().into_owned())),

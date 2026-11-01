@@ -1,17 +1,21 @@
 //! Ordered inputs and user-defined value merging.
 
+use alloc::borrow::Cow;
 use core::fmt;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use serde::Deserializer;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer};
 
-use crate::{
-    DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, DEFAULT_MAX_TOTAL_BYTES, Error, Formats, Options,
-};
+use crate::codec::CodecError;
+use crate::convert;
+use crate::error::Error;
+use crate::formats::{DEFAULT_MAX_DEPTH, DEFAULT_MAX_SOURCE_BYTES, Formats, Options};
+
+/// Default maximum size of all documents combined (64 MiB).
+pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 /// How later values affect accumulated configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -35,6 +39,10 @@ pub trait MergeValues<V> {
     /// Check an individual document against the caller's depth budget.
     ///
     /// The default is a no-op for flat or non-recursive value models.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TooDeep`] for a document nested beyond `_max_depth`.
     fn validate(&self, _value: &V, _max_depth: usize) -> Result<(), Error> {
         Ok(())
     }
@@ -43,6 +51,10 @@ pub trait MergeValues<V> {
     ///
     /// Called only for the second and subsequent present sources. An adapter
     /// must handle `Merge::Replace`, or use [`ReplaceValues`] instead.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MergeShape`] for values this strategy cannot combine.
     fn merge(
         &self,
         previous: &mut V,
@@ -154,7 +166,7 @@ impl<'a> Source<'a> {
         self
     }
 
-    /// Force a registered format by name, without removing a shebang.
+    /// Force a registered format by name, without removing a format line.
     #[must_use]
     pub fn format(mut self, format: &'a str) -> Self {
         self.format = Some(format);
@@ -164,8 +176,8 @@ impl<'a> Source<'a> {
 
 /// Load and combine registered-format documents as a consumer-owned value type.
 ///
-/// Input is limited before a decoder is called. The loader has no dependency on a concrete document format or a fixed
-/// intermediate value representation.
+/// Input is limited before a decoder is called. The loader has no dependency on a concrete
+/// document format or a fixed intermediate value representation.
 #[derive(Debug)]
 pub struct Loader<'f, V> {
     formats: &'f Formats<V>,
@@ -222,7 +234,8 @@ impl<'f, V> Loader<'f, V> {
         self
     }
 
-    /// Pass a maximum nesting depth to the caller's value adapter.
+    /// Limit nesting: passed to the caller's value adapter, and enforced by a typed load.
+    /// A root value is at depth 0.
     #[must_use]
     pub fn max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = max_depth;
@@ -277,12 +290,13 @@ impl<'f, V> Loader<'f, V> {
     /// Load and then convert the merged value using a callback.
     ///
     /// A converter can hydrate a typed structure, retain an opaque value, or
-    /// translate into another representation. Conversion errors are sanitized.
+    /// translate into another representation. It reports a failure as a
+    /// [`CodecError`], whose message must quote nothing from the document.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Conversion`] if the conversion callback fails.
-    pub fn load_as<'a, I, S, M, T, E, F>(
+    /// Returns [`Error::Conversion`] with that message if the callback fails.
+    pub fn load_as<'a, I, S, M, T, F>(
         &self,
         sources: I,
         adapter: &M,
@@ -292,10 +306,13 @@ impl<'f, V> Loader<'f, V> {
         I: IntoIterator<Item = S>,
         S: Into<Option<Source<'a>>>,
         M: MergeValues<V>,
-        F: FnOnce(V) -> Result<T, E>,
+        F: FnOnce(V) -> Result<T, CodecError>,
     {
         let value = self.load(sources, adapter)?;
-        convert(value).map_err(|_| Error::Conversion)
+        convert(value).map_err(|error| Error::Conversion {
+            path: None,
+            message: error.message,
+        })
     }
 
     /// Merge sources and deserialize the result into a Serde type.
@@ -307,8 +324,8 @@ impl<'f, V> Loader<'f, V> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Conversion`] for a target-type mismatch, and the
-    /// usual source/merge errors before conversion.
+    /// The usual source and merge errors, then as
+    /// [`Formats::from_slice_typed`] for the merged value.
     pub fn load_typed<'a, I, S, M, T>(&self, sources: I, adapter: &M) -> Result<T, Error>
     where
         I: IntoIterator<Item = S>,
@@ -317,7 +334,7 @@ impl<'f, V> Loader<'f, V> {
         V: for<'de> Deserializer<'de>,
         T: DeserializeOwned,
     {
-        T::deserialize(self.load(sources, adapter)?).map_err(|_| Error::Conversion)
+        convert::from_value(self.load(sources, adapter)?, self.max_depth)
     }
 
     /// Load sources or return a caller-supplied default if all were absent.
@@ -381,6 +398,7 @@ impl<'f, V> Loader<'f, V> {
             name: name.as_deref(),
             default_format: Some(self.default_format.as_str()),
             max_bytes: limit,
+            max_depth: self.max_depth,
         };
         self.formats.from_slice(bytes.as_ref(), opts)
     }

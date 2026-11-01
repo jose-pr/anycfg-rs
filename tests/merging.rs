@@ -41,10 +41,9 @@ fn registry() -> Formats<Node> {
                         if line.is_empty() {
                             continue;
                         }
-                        let (key, value) = line.split_once('=').ok_or(CodecError {
-                            line: Some(index + 1),
-                            column: None,
-                        })?;
+                        let (key, value) = line
+                            .split_once('=')
+                            .ok_or_else(|| CodecError::new().line(index + 1))?;
                         insert(&mut root, key, value.to_owned());
                     }
                     Ok(root)
@@ -87,17 +86,18 @@ impl MergeValues<Node> for TreeAdapter {
         match (old, next) {
             (Node::Map(before), Node::Map(after)) => {
                 for (key, value) in after {
-                    if strategy == Merge::Deep {
-                        if let Some(previous) = before.get_mut(&key) {
-                            if matches!(previous, Node::Map(_)) && matches!(value, Node::Map(_)) {
-                                self.merge(previous, value, strategy, max_depth.saturating_sub(1))?;
-                            } else {
-                                *previous = value;
-                            }
-                            continue;
+                    match before.get_mut(&key) {
+                        Some(previous)
+                            if strategy == Merge::Deep
+                                && matches!(previous, Node::Map(_))
+                                && matches!(value, Node::Map(_)) =>
+                        {
+                            self.merge(previous, value, strategy, max_depth.saturating_sub(1))?;
+                        }
+                        _ => {
+                            before.insert(key, value);
                         }
                     }
-                    before.insert(key, value);
                 }
                 Ok(())
             }
@@ -157,11 +157,14 @@ fn caller_can_convert_the_final_value_with_custom_callback() {
     let registry = registry();
     let port: u16 = Loader::new(&registry, "pairs")
         .load_as([Source::text("port=8080\n")], &TreeAdapter, |root| {
-            let Node::Map(map) = root else { return Err(()) };
-            let Some(Node::Text(port)) = map.get("port") else {
-                return Err(());
+            let refused = || CodecError::new().message("no port");
+            let Node::Map(map) = root else {
+                return Err(refused());
             };
-            port.parse().map_err(|_| ())
+            let Some(Node::Text(port)) = map.get("port") else {
+                return Err(refused());
+            };
+            port.parse().map_err(|_| refused())
         })
         .unwrap();
     assert_eq!(port, 8080);

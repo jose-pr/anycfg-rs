@@ -5,7 +5,7 @@
 use std::env;
 use std::path::{Component, Path, PathBuf};
 
-use crate::Error;
+use crate::error::Error;
 
 fn home() -> Result<PathBuf, Error> {
     env::home_dir().ok_or(Error::HomeUnavailable)

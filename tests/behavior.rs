@@ -18,11 +18,9 @@ fn formats() -> Formats<BTreeMap<String, String>> {
                             if line.is_empty() {
                                 continue;
                             }
-                            let (key, value) =
-                                line.split_once(char::from(separator)).ok_or(CodecError {
-                                    line: Some(index + 1),
-                                    column: None,
-                                })?;
+                            let (key, value) = line
+                                .split_once(char::from(separator))
+                                .ok_or_else(|| CodecError::new().line(index + 1))?;
                             map.insert(key.to_owned(), value.to_owned());
                         }
                         Ok(map)
@@ -78,11 +76,11 @@ fn extensions_and_shebangs_choose_only_registered_codecs() {
     assert!(matches!(marked, Error::Parse { .. }));
     assert!(matches!(
         registry.from_slice(b"port=80\n", Options::new().name("app.zz")),
-        Err(Error::UnsupportedExtension)
+        Err(Error::UnsupportedExtension { .. })
     ));
     assert!(matches!(
         registry.from_slice(b"#!not-registered\nport:80", Options::new()),
-        Err(Error::UnsupportedFormat)
+        Err(Error::UnsupportedFormat { .. })
     ));
 }
 
@@ -133,7 +131,7 @@ fn registration_is_atomic_and_names_are_validated() {
     ));
     assert!(matches!(
         registry.set_default("unknown"),
-        Err(Error::UnsupportedFormat)
+        Err(Error::UnsupportedFormat { .. })
     ));
 }
 
@@ -159,10 +157,7 @@ fn parse_errors_cannot_display_secrets_returned_by_user_codecs() {
             ["conf"],
             Callbacks::new(
                 |_input: &[u8]| -> Result<String, CodecError> {
-                    Err(CodecError {
-                        line: Some(2),
-                        column: Some(5),
-                    })
+                    Err(CodecError::new().line(2).column(5))
                 },
                 |_value: &String| Ok(Vec::new()),
             ),
@@ -217,7 +212,7 @@ fn cfg_is_automatically_registered_with_a_loader_supplied_default() {
     ));
     assert!(matches!(
         registry.to_auto_vec(&fixed, "equals", "cfg"),
-        Err(Error::UnsupportedExtension)
+        Err(Error::UnsupportedExtension { .. })
     ));
 }
 
@@ -246,7 +241,7 @@ fn any_extension_can_opt_into_auto_format_selection() {
     ));
     assert!(matches!(
         registry.from_slice(b"port=202\n", Options::new().name("app.unknown")),
-        Err(Error::UnsupportedExtension)
+        Err(Error::UnsupportedExtension { .. })
     ));
 }
 

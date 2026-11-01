@@ -22,13 +22,11 @@ fn user_config_paths_follow_the_platform_convention() {
         user_config_path(Some(Path::new("app/settings.cfg"))).unwrap(),
         base.join("app/settings.cfg")
     );
-    if !cfg!(windows) {
-        if std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|x| Path::new(x).is_absolute())
-            .is_none()
-        {
-            assert!(base.ends_with(".config"));
-        }
+    let no_xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|x| Path::new(x).is_absolute())
+        .is_none();
+    if !cfg!(windows) && no_xdg {
+        assert!(base.ends_with(".config"));
     }
 }
 

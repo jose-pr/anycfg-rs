@@ -1,79 +1,26 @@
-//! Format handlers and dispatch without a built-in document parser.
+//! The registry of a caller's formats, and how a document selects one.
 
+use alloc::collections::BTreeMap;
 use core::fmt;
-use core::marker::PhantomData;
-use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserializer, Serialize, Serializer};
 
-use crate::{DEFAULT_MAX_SOURCE_BYTES, Error};
+use crate::codec::Codec;
+use crate::convert;
+use crate::error::Error;
 
-/// Safe parser location information, without an input excerpt or error message.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CodecError {
-    /// One-based line number when known.
-    pub line: Option<usize>,
-    /// One-based column number when known.
-    pub column: Option<usize>,
-}
-
-/// Converts a registered document representation to and from bytes.
-///
-/// The codec owns all format-specific semantics, including number and date
-/// fidelity. Implementations must never execute code or fetch external data
-/// unless their consumer explicitly opts in.
-pub trait Codec<V> {
-    /// Decode exactly one document into the consumer's value model.
-    fn decode(&self, input: &[u8]) -> Result<V, CodecError>;
-    /// Encode one value into a complete document.
-    fn encode(&self, value: &V) -> Result<Vec<u8>, CodecError>;
-}
-
-/// Build a [`Codec`] from a decoder and an encoder callback.
-pub struct Callbacks<V, D, E> {
-    decode: D,
-    encode: E,
-    marker: PhantomData<fn() -> V>,
-}
-
-impl<V, D, E> fmt::Debug for Callbacks<V, D, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Callbacks").finish_non_exhaustive()
-    }
-}
-
-impl<V, D, E> Callbacks<V, D, E> {
-    /// Create a codec from `decode(&[u8])` and `encode(&V)` callbacks.
-    #[must_use]
-    pub fn new(decode: D, encode: E) -> Self {
-        Self {
-            decode,
-            encode,
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<V, D, E> Codec<V> for Callbacks<V, D, E>
-where
-    D: Fn(&[u8]) -> Result<V, CodecError>,
-    E: Fn(&V) -> Result<Vec<u8>, CodecError>,
-{
-    fn decode(&self, input: &[u8]) -> Result<V, CodecError> {
-        (self.decode)(input)
-    }
-
-    fn encode(&self, value: &V) -> Result<Vec<u8>, CodecError> {
-        (self.encode)(value)
-    }
-}
+/// Default maximum size of one document (8 MiB).
+pub const DEFAULT_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+/// Default maximum nesting of one document: a typed read, and what a merge adapter is given.
+pub const DEFAULT_MAX_DEPTH: usize = 64;
 
 /// Per-input detection hints; no filesystem access occurs during detection.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Options<'a> {
-    /// Explicit registered format; when present, a shebang is not removed.
+    /// Explicit registered format; when present, a format line is not removed.
     pub format: Option<&'a str>,
     /// Logical source name; only its final extension is examined.
     pub name: Option<&'a str>,
@@ -81,6 +28,8 @@ pub struct Options<'a> {
     pub default_format: Option<&'a str>,
     /// Maximum accepted source length in bytes.
     pub max_bytes: usize,
+    /// Maximum nesting a typed read accepts.
+    pub max_depth: usize,
 }
 
 impl Default for Options<'_> {
@@ -90,28 +39,32 @@ impl Default for Options<'_> {
             name: None,
             default_format: None,
             max_bytes: DEFAULT_MAX_SOURCE_BYTES,
+            max_depth: DEFAULT_MAX_DEPTH,
         }
     }
 }
 
 impl<'a> Options<'a> {
-    /// Create options with an 8 MiB input cap.
+    /// Create options with [`DEFAULT_MAX_SOURCE_BYTES`] and [`DEFAULT_MAX_DEPTH`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+
     /// Supply a logical filename hint.
     #[must_use]
     pub fn name(mut self, name: &'a str) -> Self {
         self.name = Some(name);
         self
     }
+
     /// Force a registered format name.
     #[must_use]
     pub fn format(mut self, format: &'a str) -> Self {
         self.format = Some(format);
         self
     }
+
     /// Choose the fallback for unnamed bytes/readers without a matching header.
     /// An auto-detect extension with its own default takes precedence.
     #[must_use]
@@ -119,16 +72,25 @@ impl<'a> Options<'a> {
         self.default_format = Some(format);
         self
     }
+
     /// Set the byte budget for this input.
     #[must_use]
     pub fn max_bytes(mut self, max_bytes: usize) -> Self {
         self.max_bytes = max_bytes;
         self
     }
+
+    /// Set the nesting a typed read of this input accepts. A root value is at depth 0.
+    #[must_use]
+    pub fn max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
 }
 
 /// A registered format selection and its unmodified or header-stripped bytes.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Detection<'a> {
     /// Canonical registered format name.
     pub format: &'a str,
@@ -150,7 +112,7 @@ enum ExtensionMode {
 /// The .cfg extension starts in auto-detect mode with its default supplied
 /// by each loader. All other extensions and codecs are registered by callers.
 pub struct Formats<V> {
-    codecs: BTreeMap<String, Box<dyn Codec<V>>>,
+    codecs: BTreeMap<String, Box<dyn Codec<V> + Send + Sync>>,
     suffixes: BTreeMap<String, ExtensionMode>,
     markers: Vec<(Vec<u8>, String)>,
     fallback: Option<String>,
@@ -194,7 +156,7 @@ impl<V> Formats<V> {
     /// Returns [`Error::InvalidRegistration`] on duplicate or invalid names.
     pub fn register<C, I, S>(&mut self, name: &str, extensions: I, codec: C) -> Result<(), Error>
     where
-        C: Codec<V> + 'static,
+        C: Codec<V> + Send + Sync + 'static,
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
@@ -202,23 +164,7 @@ impl<V> Formats<V> {
         if self.codecs.contains_key(&canonical) {
             return Err(Error::InvalidRegistration);
         }
-        let extensions: Vec<String> = extensions
-            .into_iter()
-            .map(|name| normalize(name.as_ref().trim_start_matches('.')))
-            .collect::<Result<_, _>>()?;
-        if extensions
-            .iter()
-            .any(|ext| ext != "cfg" && self.suffixes.contains_key(ext))
-        {
-            return Err(Error::InvalidRegistration);
-        }
-        if extensions
-            .iter()
-            .enumerate()
-            .any(|(i, ext)| extensions[..i].contains(ext))
-        {
-            return Err(Error::InvalidRegistration);
-        }
+        let extensions = self.new_extensions(extensions)?;
         for ext in extensions {
             self.suffixes
                 .insert(ext, ExtensionMode::Fixed(canonical.clone()));
@@ -237,12 +183,10 @@ impl<V> Formats<V> {
     /// Rejects unregistered formats, invalid or conflicting extensions.
     pub fn register_extension(&mut self, extension: &str, format: &str) -> Result<(), Error> {
         let canonical = self.canonical(format)?.to_owned();
-        let extension = normalize(extension.trim_start_matches('.'))?;
-        if extension != "cfg" && self.suffixes.contains_key(&extension) {
-            return Err(Error::InvalidRegistration);
+        for ext in self.new_extensions([extension])? {
+            self.suffixes
+                .insert(ext, ExtensionMode::Fixed(canonical.clone()));
         }
-        self.suffixes
-            .insert(extension, ExtensionMode::Fixed(canonical));
         Ok(())
     }
 
@@ -260,19 +204,8 @@ impl<V> Formats<V> {
         S: AsRef<str>,
     {
         let canonical = self.canonical(default_format)?.to_owned();
-        let extensions: Vec<String> = extensions
-            .into_iter()
-            .map(|ext| normalize(ext.as_ref().trim_start_matches('.')))
-            .collect::<Result<_, _>>()?;
-        if extensions.is_empty()
-            || extensions
-                .iter()
-                .any(|ext| ext != "cfg" && self.suffixes.contains_key(ext))
-            || extensions
-                .iter()
-                .enumerate()
-                .any(|(i, ext)| extensions[..i].contains(ext))
-        {
+        let extensions = self.new_extensions(extensions)?;
+        if extensions.is_empty() {
             return Err(Error::InvalidRegistration);
         }
         for ext in extensions {
@@ -295,24 +228,44 @@ impl<V> Formats<V> {
     /// Associate a native document prefix with a registered codec.
     ///
     /// Markers are checked for unnamed documents and auto-detect extensions.
-    /// They never override an explicit format or fixed extension.
+    /// They never override an explicit format or fixed extension, and the
+    /// marker stays in what the codec is given.
     ///
     /// # Errors
     ///
-    /// Returns an error for an empty, oversized or duplicate marker.
+    /// Returns an error for an empty or duplicate marker.
     pub fn register_marker(&mut self, name: &str, marker: &[u8]) -> Result<(), Error> {
         let canonical = self.canonical(name)?.to_owned();
-        if marker.is_empty()
-            || marker.len() > SHEBANG_MAX_BYTES
-            || self.markers.iter().any(|(existing, _)| existing == marker)
-        {
+        if marker.is_empty() || self.markers.iter().any(|(existing, _)| existing == marker) {
             return Err(Error::InvalidRegistration);
         }
         self.markers.push((marker.to_vec(), canonical));
         // Longest matching prefix wins; ties are rejected above.
         self.markers
-            .sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+            .sort_by_key(|(prefix, _)| core::cmp::Reverse(prefix.len()));
         Ok(())
+    }
+
+    /// Lowercased, undotted extensions that are valid and free to take.
+    fn new_extensions<I, S>(&self, extensions: I) -> Result<Vec<String>, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let extensions: Vec<String> = extensions
+            .into_iter()
+            .map(|ext| normalize(ext.as_ref().trim_start_matches('.')))
+            .collect::<Result<_, _>>()?;
+        let taken = |ext: &String| ext != "cfg" && self.suffixes.contains_key(ext);
+        let repeated = |index: usize, ext: &String| extensions[..index].contains(ext);
+        if extensions
+            .iter()
+            .enumerate()
+            .any(|(index, ext)| taken(ext) || repeated(index, ext))
+        {
+            return Err(Error::InvalidRegistration);
+        }
+        Ok(extensions)
     }
 
     fn canonical(&self, name: &str) -> Result<&str, Error> {
@@ -320,7 +273,13 @@ impl<V> Formats<V> {
         self.codecs
             .get_key_value(&name.to_ascii_lowercase())
             .map(|(key, _)| key.as_str())
-            .ok_or(Error::UnsupportedFormat)
+            .ok_or_else(|| self.unsupported_format())
+    }
+
+    fn unsupported_format(&self) -> Error {
+        Error::UnsupportedFormat {
+            registered: self.codecs.keys().cloned().collect(),
+        }
     }
 
     /// Select the registered codec without speculative parsing.
@@ -353,7 +312,14 @@ impl<V> Formats<V> {
         let mode = options
             .name
             .and_then(extension)
-            .map(|ext| self.suffixes.get(&ext).ok_or(Error::UnsupportedExtension))
+            .map(|ext| {
+                self.suffixes
+                    .get(&ext)
+                    .ok_or_else(|| Error::UnsupportedExtension {
+                        extension: ext.clone(),
+                        registered: self.suffixes.keys().cloned().collect(),
+                    })
+            })
             .transpose()?;
         if let Some(ExtensionMode::Fixed(name)) = mode {
             return Ok(Detection {
@@ -367,17 +333,18 @@ impl<V> Formats<V> {
                 .position(|b| *b == b'\n')
                 .unwrap_or(payload.len());
             if end > SHEBANG_MAX_BYTES {
-                return Err(Error::InvalidShebang);
+                return Err(self.unsupported_format());
             }
-            let line = core::str::from_utf8(&payload[2..end]).map_err(|_| Error::InvalidShebang)?;
+            let line =
+                core::str::from_utf8(&payload[2..end]).map_err(|_| self.unsupported_format())?;
             let requested = line
                 .split_ascii_whitespace()
                 .last()
-                .ok_or(Error::InvalidShebang)?;
+                .ok_or_else(|| self.unsupported_format())?;
             let requested = requested
                 .rsplit(['/', '\\'])
                 .next()
-                .ok_or(Error::InvalidShebang)?;
+                .ok_or_else(|| self.unsupported_format())?;
             let format = self.canonical(requested)?;
             let tail = if end < payload.len() {
                 &payload[end + 1..]
@@ -420,29 +387,34 @@ impl<V> Formats<V> {
         let codec = self
             .codecs
             .get(selected.format)
-            .ok_or(Error::UnsupportedFormat)?;
+            .ok_or_else(|| self.unsupported_format())?;
         codec.decode(selected.payload).map_err(|e| Error::Parse {
             format: selected.format.to_owned(),
             line: e.line,
             column: e.column,
+            message: e.message,
         })
     }
 
     /// Decode one registered document and deserialize its value into a Serde type.
     ///
-    /// The consumer's value type must implement [`serde::Deserializer`]. The
-    /// registered codec still decides how source bytes become that value;
-    /// the library never converts through a particular document format.
+    /// The consumer's value type must implement [`serde::Deserializer`], and be
+    /// self-describing: the value is read through `deserialize_any`. The
+    /// registered codec still decides how source bytes become that value; the
+    /// library never converts through a particular document format.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Conversion`] if the value cannot deserialize as `T`.
+    /// [`Error::Conversion`] names the refused key (`path`) and says what was
+    /// wrong: an unknown, missing or duplicate field by name, a wrong type by
+    /// what was expected and the kind found. It never quotes a value.
+    /// [`Error::TooDeep`] beyond [`Options::max_depth`].
     pub fn from_slice_typed<T>(&self, input: &[u8], options: Options<'_>) -> Result<T, Error>
     where
         V: for<'de> Deserializer<'de>,
         T: DeserializeOwned,
     {
-        T::deserialize(self.from_slice(input, options)?).map_err(|_| Error::Conversion)
+        convert::from_value(self.from_slice(input, options)?, options.max_depth)
     }
 
     /// Decode UTF-8 text with the selected registered codec.
@@ -458,7 +430,7 @@ impl<V> Formats<V> {
     ///
     /// # Errors
     ///
-    /// Returns safe selection, parse or type conversion errors.
+    /// As [`Formats::from_slice_typed`].
     pub fn from_str_typed<T>(&self, input: &str, options: Options<'_>) -> Result<T, Error>
     where
         V: for<'de> Deserializer<'de>,
@@ -486,28 +458,29 @@ impl<V> Formats<V> {
     ///
     /// # Errors
     ///
-    /// Returns safe I/O, size, parse or type conversion errors.
+    /// An I/O or size error, or as [`Formats::from_slice_typed`].
     pub fn from_reader_typed<T>(&self, input: impl Read, options: Options<'_>) -> Result<T, Error>
     where
         V: for<'de> Deserializer<'de>,
         T: DeserializeOwned,
     {
-        T::deserialize(self.from_reader(input, options)?).map_err(|_| Error::Conversion)
+        convert::from_value(self.from_reader(input, options)?, options.max_depth)
     }
 
     /// Serialize a value with a named registered codec.
     ///
     /// # Errors
     ///
-    /// Returns a sanitized codec error on failed encoding.
+    /// Returns [`Error::Serialize`] with the codec's message on failed encoding.
     pub fn to_vec(&self, value: &V, name: &str) -> Result<Vec<u8>, Error> {
         let canonical = self.canonical(name)?;
         self.codecs
             .get(canonical)
-            .ok_or(Error::UnsupportedFormat)?
+            .ok_or_else(|| self.unsupported_format())?
             .encode(value)
-            .map_err(|_| Error::Serialize {
+            .map_err(|e| Error::Serialize {
                 format: canonical.to_owned(),
+                message: e.message,
             })
     }
 
@@ -519,15 +492,14 @@ impl<V> Formats<V> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Conversion`] for failed Serde conversion, or a
-    /// sanitized codec error if the converted value cannot be encoded.
+    /// Returns [`Error::Conversion`] for failed Serde conversion, or
+    /// [`Error::Serialize`] if the converted value cannot be encoded.
     pub fn to_vec_typed<T, S>(&self, value: &T, name: &str, serializer: S) -> Result<Vec<u8>, Error>
     where
         T: Serialize + ?Sized,
         S: Serializer<Ok = V>,
     {
-        let intermediate = value.serialize(serializer).map_err(|_| Error::Conversion)?;
-        self.to_vec(&intermediate, name)
+        self.to_vec(&convert_for_writing(value, serializer)?, name)
     }
 
     /// Serialize a value with the native format's bytes and UTF-8 decoding.
@@ -545,7 +517,7 @@ impl<V> Formats<V> {
     ///
     /// # Errors
     ///
-    /// Returns a sanitized codec or I/O error.
+    /// Returns a codec or I/O error.
     pub fn to_writer(&self, mut writer: impl Write, value: &V, name: &str) -> Result<(), Error> {
         writer.write_all(&self.to_vec(value, name)?)?;
         Ok(())
@@ -570,8 +542,7 @@ impl<V> Formats<V> {
         T: Serialize + ?Sized,
         S: Serializer<Ok = V>,
     {
-        let intermediate = value.serialize(serializer).map_err(|_| Error::Conversion)?;
-        self.to_auto_vec(&intermediate, name, extension)
+        self.to_auto_vec(&convert_for_writing(value, serializer)?, name, extension)
     }
 
     /// Serialize for a registered auto-detect extension.
@@ -587,7 +558,10 @@ impl<V> Formats<V> {
         let canonical = self.canonical(name)?;
         let ext = normalize(extension.trim_start_matches('.'))?;
         let Some(ExtensionMode::Auto(default)) = self.suffixes.get(&ext) else {
-            return Err(Error::UnsupportedExtension);
+            return Err(Error::UnsupportedExtension {
+                extension: ext,
+                registered: self.auto_extensions(),
+            });
         };
         let mut bytes = self.to_vec(value, canonical)?;
         if default.as_deref() != Some(canonical) {
@@ -597,6 +571,26 @@ impl<V> Formats<V> {
         }
         Ok(bytes)
     }
+
+    fn auto_extensions(&self) -> Vec<String> {
+        self.suffixes
+            .iter()
+            .filter(|(_, mode)| matches!(mode, ExtensionMode::Auto(_)))
+            .map(|(extension, _)| extension.clone())
+            .collect()
+    }
+}
+
+fn convert_for_writing<T, S>(value: &T, serializer: S) -> Result<S::Ok, Error>
+where
+    T: Serialize + ?Sized,
+    S: Serializer,
+{
+    // The serializer's error may quote the value being written.
+    value.serialize(serializer).map_err(|_| Error::Conversion {
+        path: None,
+        message: Some("the value could not be converted for writing".to_owned()),
+    })
 }
 
 fn normalize(input: &str) -> Result<String, Error> {

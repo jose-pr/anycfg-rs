@@ -23,6 +23,9 @@ default = []
 [dependencies]
 # The typed reads and writes.
 serde = { version = "1", default-features = false, features = ["std"] }
+# The path of the key a typed read refuses. Pre-1.0: dtolnay's crate, whose 0.1 line is the one
+# in use across the ecosystem.
+serde_path_to_error = "0.1"
 
 [dev-dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "std"] }

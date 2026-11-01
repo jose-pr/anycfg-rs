@@ -3,25 +3,33 @@ name = "anycfg"
 version = "0.1.0-alpha.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Format-neutral configuration discovery, loading, and layering"
-repository = "https://github.com/jose-pr/anycfg-rs"
-documentation = "https://jose-pr.github.io/anycfg-rs/"
+description = "Format-neutral configuration discovery, loading and layering"
+license = "MPL-2.0"
 readme = "README.md"
+repository = "https://github.com/jose-pr/anycfg-rs"
+homepage = "https://jose-pr.github.io/anycfg-rs/"
+keywords = ["config", "configuration", "serde", "toml", "yaml"]
+categories = ["config"]
 publish = false
-exclude = [".*", "*.local.*"]
-
-[lib]
-name = "anycfg"
-path = "src/lib.rs"
-
-[dependencies]
-serde = "1"
-
-[dev-dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.9"
-serde-saphyr = "2"
+exclude = [".*", "*.local.*", "/tools/"]
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+
+[dependencies]
+# The typed reads and writes.
+serde = { version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+# The three formats the example and the tests register. `preserve_order`: the tests assert
+# that a typed read sees a document's keys in the order they were written.
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "0.9", features = ["preserve_order"] }
+serde-saphyr = "2"
+# Temporary directories for the file tests.
+tempfile = "3"
